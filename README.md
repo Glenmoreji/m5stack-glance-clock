@@ -36,7 +36,7 @@ To get started, here are the minimum requirements and how the system architectur
 - 
    <div align="center">
      <img src="./images/M5stack_Basic.png" width="200">
-     <img src="./images/AtomS3_lite.JPG" width="200">
+     <img src="./images/AtomS3_lite.png" width="200">
    </div>
    
 ### System Workflow
@@ -102,7 +102,7 @@ You can directly flash the firmware via a browser-based Web Flusher without sett
 8. Open **`tools/GlanceCommand.html`** in your browser to easily control the clock.
    
    <div align="center">
-     <img src="./images/GUI_html.png" width="300">
+     <img src="./images/GUI_html.png" width="200">
    </div>
 
 ---
