@@ -33,7 +33,12 @@ To get started, here are the minimum requirements and how the system architectur
 - **Glance Clock**: The target device to revive.
 - **ESP32**: M5Stack Basic or AtomS3 Lite.
 - **PC**: Required to flash the firmware/program to the M5Stack.
-
+- 
+   <div align="center">
+     <img src="./images/M5stack_Basic.png" width="200">
+     <img src="./images/AtomS3_lite.JPG" width="200">
+   </div>
+   
 ### System Workflow
 ```text
 [ Control Triggers ]
@@ -92,6 +97,13 @@ You can directly flash the firmware via a browser-based Web Flusher without sett
 5. Enter your home Wi-Fi SSID and password and save them; the M5Stack will then connect to your home network.  
    (Input via serial monitor from a PC is also available.)
 6. Once the PIN code appears on the clock's display, enter `http://glance-clock.local/pin?code=[PIN-code]` to start operating as a bridge.
+7. Once **"Done"** is displayed on the Glance Clock, the pairing is successfully completed.  
+   *(Tip: Pressing **BtnA** on the Basic or the physical button on the AtomS3 Lite allows you to clear Wi-Fi settings, pairing data, and information.)*
+8. Open **`tools/GlanceCommand.html`** in your browser to easily control the clock.
+   
+   <div align="center">
+     <img src="./images/GUI_html.png" width="300">
+   </div>
 
 ---
 
