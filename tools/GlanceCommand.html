@@ -288,9 +288,12 @@
                     <input type="number" id="Hour" value="7" min="0" max="23" style="width: 70px;"> :
                     <input type="number" id="Min" value="0" min="0" max="59" style="width: 70px;"> 
                 </div>
-                <div style="display: flex; gap: 8px; align-items: center;">
+                <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                     <button onclick="setAlarm()">Set Alarm</button>
-                    <button class="secondary" onclick="sendQuick('alarm/stop')">Stop Alarm</button>
+                    <!-- Stop Alarm: CMD_ALARM_STOP (byte=20) -->
+                    <button class="secondary" onclick="sendQuick('cmd?byte=20')">Stop Alarm</button>
+                    <!-- Alarm Clear: CMD_ALARM_CLEAR (byte=21) -->
+                    <button class="secondary" onclick="sendQuick('cmd?byte=21')">Alarm Clear</button>
                 </div>
             </div>
 
@@ -301,7 +304,8 @@
                 </div>
                 <div style="display: flex; gap: 8px; align-items: center;">
                     <button onclick="setTimer()">Start Timer</button>
-                    <button class="secondary" onclick="sendQuick('timer/stop')">Stop Timer</button>
+                    <!-- Stop Timer: CMD_TIMER_STOP (byte=10) -->
+                    <button class="secondary" onclick="sendQuick('cmd?byte=10')">Stop Timer</button>
                 </div>
             </div>
         </div>
@@ -311,11 +315,16 @@
     <div class="section">
         <h2>4. Quick Control Commands</h2>
         <div class="grid">
-            <button class="secondary" onclick="sendQuick('scenes/stop')">Scenes Stop</button>
-            <button class="secondary" onclick="sendQuick('scenes/start')">Scenes Start</button>
-            <button class="secondary" onclick="sendQuick('scenes/clear')">Scenes Clear</button>
-            <button class="secondary" onclick="sendQuick('update')">Update & Refresh</button>
-            <button class="danger" onclick="sendQuick('bonds/clear')">Clear Bonds</button>
+            <!-- Scenes Stop: byte=30 -->
+            <button class="secondary" onclick="sendQuick('cmd?byte=30')">Scenes Stop</button>
+            <!-- Scenes Start: byte=31 -->
+            <button class="secondary" onclick="sendQuick('cmd?byte=31')">Scenes Start</button>
+            <!-- Scenes Clear: byte=32 -->
+            <button class="secondary" onclick="sendQuick('cmd?byte=32')">Scenes Clear</button>
+            <!-- Update & Refresh: byte=35 -->
+            <button class="secondary" onclick="sendQuick('cmd?byte=35')">Update & Refresh</button>
+            <!-- Clear Bonds: byte=42 -->
+            <button class="danger" onclick="sendQuick('cmd?byte=42')">Clear Bonds</button>
         </div>
     </div>
 
