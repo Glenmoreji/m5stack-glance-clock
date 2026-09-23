@@ -64,15 +64,26 @@ namespace Prefix {
  constexpr uint8_t APPOINTMENTS_SCENE[] = { 0x08, 0x00, 0x08 };
 }
 
-// Glance Direct Single-Byte Command Constants
-constexpr uint8_t CMD_TIMER_STOP = 0x0A;
-constexpr uint8_t CMD_ALARM_STOP = 0x14;
-constexpr uint8_t CMD_ALARM_CLEAR = 0x15;
-constexpr uint8_t CMD_SCENE_STOP = 0x1E;
-constexpr uint8_t CMD_SCENE_START = 0x1F;
-constexpr uint8_t CMD_SCENE_CLEAR = 0x20;
-constexpr uint8_t CMD_UPDATE_REFRESH = 0x23;
-constexpr uint8_t CMD_CLEAR_BONDS = 0x2A;
+// ----------------------------------------------------------------------------
+// Glance Direct Single-Byte Command Constants (Sorted by Numeric Value)
+// ----------------------------------------------------------------------------
+constexpr uint8_t CMD_TIMER_STOP             = 0x0A; // 10
+constexpr uint8_t CMD_ALARM_STOP             = 0x14; // 20
+constexpr uint8_t CMD_ALARM_CLEAR            = 0x15; // 21
+constexpr uint8_t CMD_SCENE_STOP             = 0x1E; // 30
+constexpr uint8_t CMD_SCENE_START            = 0x1F; // 31
+constexpr uint8_t CMD_SCENE_CLEAR            = 0x20; // 32
+constexpr uint8_t CMD_UPDATE_REFRESH         = 0x23; // 35
+constexpr uint8_t CMD_AUTO_NIGHT_MODE_EN     = 0x28; // 40
+constexpr uint8_t CMD_AUTO_NIGHT_MODE_DIS    = 0x29; // 41
+constexpr uint8_t CMD_CLEAR_BONDS            = 0x2A; // 42
+constexpr uint8_t CMD_CALIBRATION_START      = 0x2B; // 43
+constexpr uint8_t CMD_CALIBRATION_CONFIRM    = 0x2C; // 44
+constexpr uint8_t CMD_ALARM_WITH_NOTES       = 0x2D; // 45
+constexpr uint8_t CMD_CLEAR_USER_INFO        = 0x32; // 50
+constexpr uint8_t CMD_BRIGHTNESS_SCENE_STOP  = 0x3C; // 60
+constexpr uint8_t CMD_BRIGHTNESS_SCENE_START = 0x3D; // 61
+constexpr uint8_t CMD_DSP_STATE_SHOW         = 0x46; // 70
 
 // ----------------------------------------------------------------------------
 // Protobuf Wire Encoding Helpers

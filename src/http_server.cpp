@@ -11,15 +11,6 @@ void sendResponse(int status, const String& message, const String& contentType) 
 }
 
 // ----------------------------------------------------------------------------
-// Transmits a direct single-byte Glance command and sends an HTTP success response.
-// ----------------------------------------------------------------------------
-void sendQuickCmd(uint8_t cmdByte, const char* label) {
-    uint8_t cmd[] = {cmdByte, 0x00, 0x00, 0x00};
-    sendGlanceCommand(cmd, sizeof(cmd));
-    sendResponse(200, String("OK: ") + label);
-}
-
-// ----------------------------------------------------------------------------
 // Initializes and registers all HTTP REST API endpoints and web server handlers.
 // ----------------------------------------------------------------------------
 void setupHttpServer() {
@@ -308,13 +299,86 @@ void setupHttpServer() {
         }
     });
 
-    server.on("/scenes/stop",   HTTP_GET, []() { sendQuickCmd(CMD_SCENE_STOP, "Scenes Stop"); });
-    server.on("/scenes/start",  HTTP_GET, []() { sendQuickCmd(CMD_SCENE_START, "Scenes Start"); });
-    server.on("/scenes/clear",  HTTP_GET, []() { sendQuickCmd(CMD_SCENE_CLEAR, "Scenes Clear"); });
-    server.on("/update",        HTTP_GET, []() { sendQuickCmd(CMD_UPDATE_REFRESH, "Update & Refresh"); });
-    server.on("/timer/stop",    HTTP_GET, []() { sendQuickCmd(CMD_TIMER_STOP, "Timer Stop"); });
-    server.on("/alarm/stop",    HTTP_GET, []() { sendQuickCmd(CMD_ALARM_STOP, "Alarm Stop"); });
-    server.on("/bonds/clear",   HTTP_GET, []() { sendQuickCmd(CMD_CLEAR_BONDS, "Clear Bonds"); });
+    // Unified generic quick command endpoint: http://glance-clock.local/cmd?byte=31
+    server.on("/cmd", HTTP_GET, []() {
+        if (!server.hasArg("byte")) {
+            handleErrorResponse(400, "Error: Missing byte parameter");
+            return;
+        }
+
+        String byteStr = server.arg("byte");
+        uint8_t cmdByte = (uint8_t)strtoul(byteStr.c_str(), NULL, 0);
+
+        String label = "";
+
+        // Argument-free single-byte command routing (Sorted by numeric value)
+        switch (cmdByte) {
+            case CMD_TIMER_STOP:             // 10 (0x0A)
+                label = "Timer Stop";
+                break;
+            case CMD_ALARM_STOP:             // 20 (0x14)
+                label = "Alarm Stop";
+                break;
+            case CMD_ALARM_CLEAR:            // 21 (0x15)
+                label = "Alarm Clear";
+                break;
+            case CMD_SCENE_STOP:             // 30 (0x1E)
+                label = "Scenes Stop";
+                break;
+            case CMD_SCENE_START:            // 31 (0x1F)
+                label = "Scenes Start";
+                break;
+            case CMD_SCENE_CLEAR:            // 32 (0x20)
+                label = "Scenes Clear";
+                break;
+            case CMD_UPDATE_REFRESH:         // 35 (0x23)
+                label = "Update & Refresh";
+                break;
+            case CMD_AUTO_NIGHT_MODE_EN:     // 40 (0x28)
+                label = "Enable Auto Night Mode";
+                break;
+            case CMD_AUTO_NIGHT_MODE_DIS:    // 41 (0x29)
+                label = "Disable Auto Night Mode";
+                break;
+            case CMD_CLEAR_BONDS:            // 42 (0x2A)
+                label = "Bonds Clear";
+                break;
+            case CMD_CALIBRATION_START:      // 43 (0x2B)
+                label = "Start Calibration";
+                break;
+            case CMD_CALIBRATION_CONFIRM:    // 44 (0x2C)
+                label = "Confirm Calibration";
+                break;
+            case CMD_ALARM_WITH_NOTES:       // 45 (0x2D)
+                label = "Alarm with Notes";
+                break;
+            case CMD_CLEAR_USER_INFO:        // 50 (0x32)
+                label = "Clear User Info (Factory Reset)";
+                break;
+            case CMD_BRIGHTNESS_SCENE_STOP:  // 60 (0x3C)
+                label = "Brightness Scene Stop";
+                break;
+            case CMD_BRIGHTNESS_SCENE_START: // 61 (0x3D)
+                label = "Brightness Scene Start";
+                break;
+            case CMD_DSP_STATE_SHOW:         // 70 (0x46)
+                label = "DSP State Show (Serial)";
+                break;
+            default:
+                // Fallback for unlisted custom or unknown commands
+                label = "Unknown (0x" + String(cmdByte, HEX) + ")";
+                break;
+        }
+
+        uint8_t cmd[] = {cmdByte, 0x00, 0x00, 0x00};
+        
+        if (sendGlanceCommand(cmd, sizeof(cmd))) {
+            sendResponse(200, "OK: " + label);
+            M5.Display.printf("Cmd: %s\n", label.c_str());
+        } else {
+            handleErrorResponse(500, "Error: BLE send failed", label + " Failed");
+        }
+    });
 
     server.begin();
     Serial.println("HTTP server started.");
