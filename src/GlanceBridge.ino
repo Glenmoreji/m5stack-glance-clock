@@ -36,37 +36,63 @@ BleConnectionState bleState;
 // System Setup Initialization
 // ----------------------------------------------------------------------------
 void setup() {
+    delay(1000);
+
     auto cfg = M5.config();
+    cfg.serial_baudrate = 0;
     M5.begin(cfg);
     Serial.begin(115200);
 
-    M5.Display.setTextFont(2);
-    M5.Display.setTextScroll(true);
+    unsigned long start = millis();
+    while (!Serial && millis() - start < 3000) {
+        delay(10);
+    }
+
+    if (M5.Display.height() > 0) {
+        M5.Display.setTextFont(2);
+        M5.Display.setTextScroll(true);
+        if (M5.Display.height() > 40) {
+            M5.Display.setScrollRect(0, 40, M5.Display.width(), M5.Display.height() - 40);
+        }
+    }
 
     // Initialize Wi-Fi connection or start Captive Portal
     initWiFi();
 
     // Set scroll area and draw initial screen header
-    M5.Display.setScrollRect(0, 40, M5.Display.width(), M5.Display.height() - 40);
+    if (M5.Display.height() > 40) {
+        M5.Display.setScrollRect(0, 40, M5.Display.width(), M5.Display.height() - 40);
+    }
     clearLogArea();
     updateScreenStatus();
 
     // Synchronize system time with NTP server
-    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-    M5.Display.print("\nSyncing time");
-    struct tm timeinfo;
-    int retry = 0;
-    while (!getLocalTime(&timeinfo)) {
-        delay(500);
-        Serial.print(".");
-        M5.Display.print(".");
-        retry++;
-        if (retry > 20) {
-            Serial.println("\nNTP sync timeout.");
-            break;
+    if (WiFi.status() == WL_CONNECTED) {
+        configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+        M5.Display.print("\nSyncing time");
+        struct tm timeinfo;
+        int retry = 0;
+        
+        // Wait for response from NTP server (max 10 seconds)
+        while (!getLocalTime(&timeinfo)) {
+            delay(500);
+            if (Serial && Serial.availableForWrite() > 0) {
+                Serial.print(".");
+            }
+            M5.Display.print(".");
+            retry++;
+            if (retry > 20) {
+                logMessage("\nNTP sync timeout.");
+                break;
+            }
         }
+        
+        if (retry <= 20) {
+            logMessage("\nTime synchronized.");
+        }
+    } else {
+        logMessage("\nSkipping NTP sync (No internet)");
     }
-    Serial.println("\nTime synchronized.");
     
     // Register HTTP server endpoint handlers
     setupHttpServer();
@@ -79,10 +105,10 @@ void setup() {
     if (savedAddr.length() > 0) {
         targetServerAddress = BLEAddress(savedAddr.c_str());
         hasTargetAddress = true;
-        Serial.printf("Loaded saved BLE address: %s\n", savedAddr.c_str());
+        logMessage("Loaded saved BLE address: " + savedAddr);
     } else {
         hasTargetAddress = false;
-        Serial.println("No saved BLE address found. Performing initial dynamic discovery.");
+        logMessage("No saved BLE address found. Performing initial dynamic discovery.");
     }
 
     // Initialize BLE client and server stack
@@ -111,26 +137,24 @@ void loop() {
 
     // Button A: Reset Wi-Fi and BLE credentials and restart device
     if (M5.BtnA.wasPressed()) {
-        clearLogArea();
-        logMessage("[BtnA] Starting reset of Wi-Fi and BLE configurations...", "Resetting All Config...");
+            clearBondInformation();
 
-        if (bleState.connected && pClient) {
-            pClient->disconnect();
+            preferences.begin("ble-config", false);
+            preferences.clear();
+            preferences.end();
+
+            preferences.begin("wifi-config", false);
+            preferences.clear();
+            preferences.end();
+
+            dnsServer.stop();
+            server.stop();
+            WiFi.disconnect(true, true);
+            WiFi.mode(WIFI_OFF);
+            delay(500);
+
+            ESP.restart();
         }
-        clearBondInformation();
-
-        preferences.begin("ble-config", false);
-        preferences.clear();
-        preferences.end();
-
-        preferences.begin("wifi-config", false);
-        preferences.clear();
-        preferences.end();
-
-        logMessage("[BtnA] Configurations cleared. Restarting...", "Cleared! Restarting...");
-        delay(2000);
-        ESP.restart();
-    }
 
     // Button B: Send test custom notice packet
     if (M5.BtnB.wasPressed()) {
