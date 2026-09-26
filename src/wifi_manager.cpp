@@ -4,49 +4,71 @@
 #include <ESPmDNS.h>
 
 // ----------------------------------------------------------------------------
+// Generates HTML page for Wi-Fi setup captive portal.
+// ----------------------------------------------------------------------------
+static String generateSetupHTML(int networkCount) {
+    String html;
+    html.reserve(1024); // Pre-allocate memory to prevent fragmentation
+    html += F("<html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'></head><body><h1>Wi-Fi Setup</h1>");
+    html += F("<form action='/save' method='POST'>");
+    html += F("SSID: <select name='ssid' style='font-size:16px; padding:5px;'>");
+
+    if (networkCount <= 0) {
+        html += F("<option value=''>No networks found</option>");
+    } else {
+        for (int i = 0; i < networkCount; ++i) {
+            String scannedSSID = WiFi.SSID(i);
+            if (scannedSSID.length() > 0) {
+                html += "<option value='" + scannedSSID + "'>" + scannedSSID + " (" + String(WiFi.RSSI(i)) + " dBm)</option>";
+            }
+        }
+    }
+
+    html += F("</select><br><br>");
+    html += F("Password: <input type='password' name='pass' style='font-size:16px; padding:5px;'><br><br>");
+    html += F("<input type='submit' value='Save' style='font-size:16px; padding:5px 15px;'>");
+    html += F("</form></body></html>");
+    return html;
+}
+
+// ----------------------------------------------------------------------------
 // Starts Access Point mode and HTTP captive portal for Wi-Fi setup.
 // ----------------------------------------------------------------------------
 void startCaptivePortal() {
-    WiFi.disconnect(true);
+    // 1. Reset Wi-Fi state completely
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
     delay(100);
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP(apSSID);
+
+    // 2. Set to STA mode and perform a quick scan
+    WiFi.mode(WIFI_STA);
+    delay(100);
+    
+    // Scan networks asynchronously or with short timeout
+    int n = WiFi.scanNetworks(false, true); // async=false, show_hidden=true
+
+    // 3. Switch to AP mode
+    WiFi.mode(WIFI_AP);
+    
+    IPAddress local_ip(192, 168, 4, 1);
+    IPAddress gateway(192, 168, 4, 1);
+    IPAddress subnet(255, 255, 255, 0);
+    
+    WiFi.softAPConfig(local_ip, gateway, subnet);
+    // Force WiFi channel to 1 for better compatibility
+    bool apResult = WiFi.softAP(apSSID, nullptr, 1); 
+    
+    delay(500); // Wait for AP stack to initialize
+
+    // Redirect all DNS requests to local AP IP address
     dnsServer.start(53, "*", WiFi.softAPIP());
 
-    M5.Display.fillScreen(BLACK);
-    M5.Display.setCursor(0, 0);
-    M5.Display.println("Scanning Wi-Fi networks...");
-
-    int n = WiFi.scanNetworks();
-
-    // Serve HTML configuration page with scanned Wi-Fi SSIDs
+    // Serve HTML configuration page on root path
     server.on("/", HTTP_GET, [n]() {
-        String html;
-        html.reserve(1024); // Pre-allocate memory to prevent fragmentation
-        html += F("<html><head><meta name='viewport' content='width=device-width, initial-scale=1.0'></head><body><h1>Wi-Fi Setup</h1>");
-        html += F("<form action='/save' method='POST'>");
-        html += F("SSID: <select name='ssid' style='font-size:16px; padding:5px;'>");
-
-        if (n == 0) {
-            html += F("<option value=''>No networks found</option>");
-        } else {
-            for (int i = 0; i < n; ++i) {
-                String scannedSSID = WiFi.SSID(i);
-                if (scannedSSID.length() > 0) {
-                    html += "<option value='" + scannedSSID + "'>" + scannedSSID + " (" + String(WiFi.RSSI(i)) + " dBm)</option>";
-                }
-            }
-        }
-
-        html += F("</select><br><br>");
-        html += F("Password: <input type='password' name='pass' style='font-size:16px; padding:5px;'><br><br>");
-        html += F("<input type='submit' value='Save' style='font-size:16px; padding:5px 15px;'>");
-        html += F("</form></body></html>");
-        
-        server.send(200, "text/html", html);
+        server.send(200, "text/html", generateSetupHTML(n));
     });
 
-    // Handle credential submission and store settings in Preferences
+    // Handle credential submission
     server.on("/save", HTTP_POST, []() {
         if (server.hasArg("ssid") && server.hasArg("pass")) {
             ssid = server.arg("ssid");
@@ -58,35 +80,30 @@ void startCaptivePortal() {
             preferences.end();
 
             server.send(200, "text/html", "Saved! Restarting...");
-            delay(2000);
+            
+            dnsServer.stop();
+            server.stop();
+            WiFi.disconnect(true, true);
+            WiFi.mode(WIFI_OFF);
+            delay(500);
+
             ESP.restart();
         } else {
             server.send(400, "text/plain", "Bad Request");
         }
     });
 
-    // Redirect unhandled requests to captive portal root page
-    server.onNotFound([]() {
-        server.sendHeader("Location", String("http://") + WiFi.softAPIP().toString(), true);
-        server.send(302, "text/plain", "");
+    server.onNotFound([n]() {
+        server.send(200, "text/html", generateSetupHTML(n));
     });
 
     server.begin();
-    
-    M5.Display.fillScreen(BLACK);
-    M5.Display.setCursor(0, 0);
-    logMessage("--- Captive Portal ---");
-    M5.Display.printf("Connect to AP: %s\n", apSSID);
-    M5.Display.printf("IP: %s\n", WiFi.softAPIP().toString().c_str());
 
-    // Event processing loop for DNS/HTTP requests and hard reset via BtnA
+    // Loop processing
     while (true) {
         M5.update();
+        
         if (M5.BtnA.wasPressed()) {
-            M5.Display.fillScreen(BLACK);
-            M5.Display.setCursor(0, 0);
-            logMessage("[BtnA] Reset requested during Captive Portal...", "Resetting All Config...");
-
             clearBondInformation();
 
             preferences.begin("ble-config", false);
@@ -103,8 +120,7 @@ void startCaptivePortal() {
 
         dnsServer.processNextRequest();
         server.handleClient();
-        // Prevent Watchdog Timer reset during loop
-        delay(10);
+        delay(10); // Yield to prevent Watchdog reset
     }
 }
 
@@ -118,31 +134,29 @@ void initWiFi() {
     preferences.end();
 
     if (ssid == "") {
-        Serial.println("Wi-Fi configuration not found. Starting Captive Portal.");
+        logMessage("Wi-Fi configuration not found. Starting Captive Portal.");
         startCaptivePortal();
     }
 
-    M5.Display.fillScreen(BLACK);
-    M5.Display.setCursor(0, 0);
-    M5.Display.print("Connecting to WiFi");
+    logMessage("Connecting to WiFi: " + ssid);
     WiFi.begin(ssid.c_str(), password.c_str());
     int retries = 0;
     while (WiFi.status() != WL_CONNECTED) {
         delay(500);
-        Serial.print(".");
-        M5.Display.print(".");
+
+        logMessage(".", "."); 
         retries++;
         if (retries > 20) {
-            Serial.println("\nWi-Fi connection failed. Switching to Captive Portal.");
+            logMessage("\nWi-Fi connection failed. Switching to Captive Portal.");
             startCaptivePortal();
         }
     }
-    Serial.println("\nWiFi connected.");
+    logMessage("\nWiFi connected.");
         
     if (MDNS.begin("glance-clock")) {
-        Serial.println("mDNS responder started!");
-        Serial.println("You can access via: http://glance-clock.local");
+        logMessage("mDNS responder started!");
+        logMessage("You can access via: http://glance-clock.local");
     } else {
-        Serial.println("Error setting up MDNS responder!");
+        logMessage("Error setting up MDNS responder!");
     }
 }

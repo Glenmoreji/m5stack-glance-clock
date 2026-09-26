@@ -3,12 +3,18 @@
 // ----------------------------------------------------------------------------
 // Logs a message to the serial console and M5Stack LCD display.
 // ----------------------------------------------------------------------------
+// utils.cpp ‚Ì logMessage
 void logMessage(const String& consoleMsg, const String& displayMsg) {
-    Serial.println(consoleMsg);
-    if (displayMsg.length() > 0) {
-        M5.Display.println(displayMsg);
-    } else {
-        M5.Display.println(consoleMsg);
+    if (Serial && Serial.availableForWrite() > 0) {
+        Serial.println(consoleMsg);
+    }
+    
+    if (M5.Display.height() > 0) {
+        if (displayMsg.length() > 0) {
+            M5.Display.println(displayMsg);
+        } else {
+            M5.Display.println(consoleMsg);
+        }
     }
 }
 
@@ -25,8 +31,10 @@ void handleErrorResponse(int status, const String& errMsg, const String& logMsg)
 // Clears the log output region on the M5Stack LCD display.
 // ----------------------------------------------------------------------------
 void clearLogArea() {
-    M5.Display.fillRect(0, 40, M5.Display.width(), M5.Display.height() - 40, BLACK);
-    M5.Display.setCursor(0, 40);
+    if (M5.Display.height() > 40) {
+        M5.Display.fillRect(0, 40, M5.Display.width(), M5.Display.height() - 40, BLACK);
+        M5.Display.setCursor(0, 40);
+    }
 }
 
 // ----------------------------------------------------------------------------

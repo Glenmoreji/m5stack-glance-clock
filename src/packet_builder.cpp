@@ -98,12 +98,10 @@ void sendSettingsCommand() {
 // ----------------------------------------------------------------------------
 void notifyCTSTime() {
     if (bleState.isFirstPairing) {
-        Serial.println("Initial pairing detected: Applying default settings.");
-        sendSettingsCommand();
+        logMessage("Initial pairing detected: Applying default settings.", "Initial Pairing");
         bleState.isFirstPairing = false;
-    } else {
-        sendSettingsCommand();
     }
+    sendSettingsCommand();
 
     delay(50);
 
@@ -234,10 +232,6 @@ std::vector<uint8_t> buildRingPacket(std::vector<int16_t> ringValues, uint8_t sl
     encodeVarintVector(packet, message.length());
     const uint8_t* msgBytes = (const uint8_t*)message.c_str();
     packet.insert(packet.end(), msgBytes, msgBytes + message.length());
-
-    if (sendGlanceCommand(packet.data(), packet.size())) {
-        logMessage(" -> LED data sent successfully: '" + message + "'", " -> Sent: " + message);
-    }
     
     return packet;
 }

@@ -50,11 +50,15 @@ void clearBondInformation() {
 // Processes raw notification data received from characteristic FC78.
 // ----------------------------------------------------------------------------
 void notifyCallbackFC78(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
-    Serial.print("[fc78] Rx: ");
-    for (size_t i = 0; i < length; i++) {
-        Serial.printf("%02X ", pData[i]);
+    if (Serial && Serial.availableForWrite() > 0) {
+        String hexStr = "[fc78] Rx: ";
+        for (size_t i = 0; i < length; i++) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02X ", pData[i]);
+            hexStr += buf;
+        }
+        Serial.println(hexStr);
     }
-    Serial.println();
 }
 
 // ----------------------------------------------------------------------------
@@ -62,9 +66,8 @@ void notifyCallbackFC78(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8
 // ----------------------------------------------------------------------------
 class MySecurityCallbacks : public BLESecurityCallbacks {
     uint32_t onPassKeyRequest() override {
-        Serial.println("\n[SECURITY] Enter 6-digit PIN code (via Web/Serial):");
-        Serial.println("  Web: http://<IP>/pin?code=XXXXXX or Serial input");
-        M5.Display.println("\n Enter PIN via Web/Serial (20s):");
+        logMessage("\n[SECURITY] Enter 6-digit PIN code (via Web/Serial):", "Enter PIN (20s)");
+        logMessage("  Web: http://<IP>/pin?code=XXXXXX or Serial input");
 
         hasWebPin = false;
         webPinCode = "";
@@ -79,17 +82,17 @@ class MySecurityCallbacks : public BLESecurityCallbacks {
                 passKey = webPinCode.toInt();
                 hasWebPin = false;
                 isWaitingForPin = false;
-                Serial.printf(" -> PIN code received via Web: %06d\n", passKey);
+                logMessage(" -> PIN code received via Web: " + String(passKey));
                 return passKey;
             }
 
-            if (Serial.available() > 0) {
+            if (Serial && Serial.available() > 0) {
                 String inputStr = Serial.readStringUntil('\n');
                 inputStr.trim();
                 if (inputStr.length() > 0) {
                     passKey = inputStr.toInt();
                     isWaitingForPin = false;
-                    Serial.printf(" -> PIN code received via Serial: %06d\n", passKey);
+                    logMessage(" -> PIN code received via Serial: " + String(passKey));
                     return passKey;
                 }
             }
@@ -97,8 +100,7 @@ class MySecurityCallbacks : public BLESecurityCallbacks {
             delay(50); // Yield control to prevent Watchdog timeout and allow main loop execution
         }
 
-        Serial.println(" -> PIN entry timed out.");
-        M5.Display.println(" -> PIN timeout.");
+        logMessage(" -> PIN entry timed out.", " -> PIN timeout.");
         isWaitingForPin = false;
         return 0;
     }
@@ -135,12 +137,12 @@ class CTSCallbacks : public BLECharacteristicCallbacks {
     void onRead(BLECharacteristic* pCharacteristic) override {
         uint8_t currentTime[10];
         if (!createCtsTimeData(currentTime)) {
-            Serial.println(" -> Failed to get NTP time on Read.");
+            logMessage(" -> Failed to get NTP time on Read.");
             return;
         }
         
         pCharacteristic->setValue(currentTime, 10);
-        Serial.println(" -> Returned CTS time data to clock (Read).");
+        logMessage(" -> Returned CTS time data to clock (Read).");
     }
 };
 
@@ -157,11 +159,11 @@ class MyClientCallbacks : public BLEClientCallbacks {
         
         uint8_t* peerAddr = (uint8_t*)pclient->getPeerAddress().getNative();
         if (isAlreadyBonded()) {
-            Serial.println("Already bonded. Requesting encryption...");
+            logMessage("Already bonded. Requesting encryption...");
             bleState.isFirstPairing = false;
             esp_ble_set_encryption(peerAddr, ESP_BLE_SEC_ENCRYPT);
         } else {
-            Serial.println("New pairing required. Requesting MITM encryption...");
+            logMessage("New pairing required. Requesting MITM encryption...");
             bleState.isFirstPairing = true;
             esp_ble_set_encryption(peerAddr, ESP_BLE_SEC_ENCRYPT_MITM);
         }
@@ -263,15 +265,15 @@ void loopBLE() {
             pNotifyChar = pRemoteService->getCharacteristic(GLANCE_CHAR_NOTIFY_UUID);
             if (pNotifyChar != nullptr && pNotifyChar->canNotify()) {
                 pNotifyChar->registerForNotify(notifyCallbackFC78);
-                Serial.println("Registered for Notify (fc78) successfully.");
+                logMessage("Registered for Notify (fc78) successfully.");
             }
 
             pRemoteChar = pRemoteService->getCharacteristic(GLANCE_CHAR_UUID);
             if (pRemoteChar != nullptr) {
-                Serial.println("Successfully obtained communication characteristic.");
+                logMessage("Successfully obtained communication characteristic.");
             }
         } else {
-            Serial.println("Error: Glance service not found.");
+            logMessage("Error: Glance service not found.");
         }
 
         if (pRemoteChar != nullptr) {
@@ -283,7 +285,7 @@ void loopBLE() {
         bleState.doConnect = false;
 
         if (!pClient->connect(targetServerAddress, BLE_ADDR_TYPE_RANDOM)) {
-            Serial.println("Connection failed. Rescanning in 5 seconds.");
+            logMessage("Connection failed. Rescanning in 5 seconds.");
             bleState.doScan = true;
             bleState.disconnectTime = millis();
         }
@@ -292,7 +294,7 @@ void loopBLE() {
 
     if (bleState.doScan && !bleState.connected && (millis() - bleState.disconnectTime >= 5000)) {
         bleState.doScan = false;
-        Serial.println("Rescanning...");
+        logMessage("Rescanning...");
         BLEDevice::getScan()->start(5, false);
         updateScreenStatus();
     }

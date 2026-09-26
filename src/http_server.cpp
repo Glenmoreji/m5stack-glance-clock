@@ -381,5 +381,5 @@ void setupHttpServer() {
     });
 
     server.begin();
-    Serial.println("HTTP server started.");
+    logMessage("HTTP server started.");
 }
