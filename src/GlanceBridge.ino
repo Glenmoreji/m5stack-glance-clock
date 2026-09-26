@@ -1,9 +1,9 @@
-#include "config.h"
-#include "utils.h"
-#include "wifi_manager.h"
-#include "ble_manager.h"
-#include "packet_builder.h"
-#include "http_server.h"
+#include "./src/config.h"
+#include "./src/utils.h"
+#include "./src/wifi_manager.h"
+#include "./src/ble_manager.h"
+#include "./src/packet_builder.h"
+#include "./src/http_server.h"
 
 // ----------------------------------------------------------------------------
 // Global Variable Definitions
@@ -120,8 +120,47 @@ void setup() {
 // Main Event Loop Execution
 // ----------------------------------------------------------------------------
 void loop() {
+    // Update and check button states first
     M5.update();
+
+    // Button A: Reset Wi-Fi and BLE credentials and restart device
+    if (M5.BtnA.wasPressed() || M5.BtnA.isPressed()) {
+        logMessage("[BtnA] Erasing all settings and NVS storage...");
+
+        // Send CMD_CLEAR_BONDS to the BLE device before restarting
+        uint8_t clearBondsCmd[] = {CMD_CLEAR_BONDS, 0x00, 0x00, 0x00};
+        if (sendGlanceCommand(clearBondsCmd, sizeof(clearBondsCmd))) {
+            logMessage("Sent CMD_CLEAR_BONDS successfully.");
+            delay(100);
+        } else {
+            logMessage("Failed to send CMD_CLEAR_BONDS.");
+        }
     
+        // Initialize and erase the entire ESP32 NVS (non-volatile storage)
+        nvs_flash_erase();
+        nvs_flash_init();
+
+        // Stop Wi-Fi and various servers
+        dnsServer.stop();
+        server.stop();
+        WiFi.disconnect(true, true);
+        WiFi.mode(WIFI_OFF);
+        delay(500);
+
+        // Restart device
+        ESP.restart();
+    }
+
+    // Button B: Send test custom notice packet
+    if (M5.BtnB.wasPressed()) {
+        sendCustomNoticeCommand("I'm back!", 1, 5, 23, 1, 130);
+    }
+
+    // Button C: Force CTS time synchronization notification
+    if (M5.BtnC.wasPressed()) {
+        notifyCTSTime();
+    }
+
     // Monitor Wi-Fi connection and attempt reconnect if dropped
     static unsigned long lastWifiCheck = 0;
     if (WiFi.status() != WL_CONNECTED) {
@@ -135,36 +174,8 @@ void loop() {
         server.handleClient();
     }
 
-    // Button A: Reset Wi-Fi and BLE credentials and restart device
-    if (M5.BtnA.wasPressed()) {
-            clearBondInformation();
-
-            preferences.begin("ble-config", false);
-            preferences.clear();
-            preferences.end();
-
-            preferences.begin("wifi-config", false);
-            preferences.clear();
-            preferences.end();
-
-            dnsServer.stop();
-            server.stop();
-            WiFi.disconnect(true, true);
-            WiFi.mode(WIFI_OFF);
-            delay(500);
-
-            ESP.restart();
-        }
-
-    // Button B: Send test custom notice packet
-    if (M5.BtnB.wasPressed()) {
-        sendCustomNoticeCommand("I'm back!", 1, 5, 23, 1, 130); // message, anim, sound, color, mod, icon
-    }
-
-    // Button C: Force CTS time synchronization notification
-    if (M5.BtnC.wasPressed()) {
-        notifyCTSTime();
-    }
+    // Update button state again to prevent input drops during processing
+    M5.update();
 
     // Execute BLE connection, scanning, and state machine loop
     loopBLE();

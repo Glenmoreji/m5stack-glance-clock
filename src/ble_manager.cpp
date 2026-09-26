@@ -255,6 +255,9 @@ void setupBLE() {
 // ----------------------------------------------------------------------------
 // Manages BLE state loop including service discovery, connection, and rescanning.
 // ----------------------------------------------------------------------------
+// ----------------------------------------------------------------------------
+// Manages BLE state loop including service discovery, connection, and rescanning.
+// ----------------------------------------------------------------------------
 void loopBLE() {
     if (bleState.connected && bleState.isAuthReady && bleState.needCtsSync) {
         bleState.needCtsSync = false;
@@ -283,6 +286,8 @@ void loopBLE() {
 
     if (bleState.doConnect) {
         bleState.doConnect = false;
+
+        delay(50);
 
         if (!pClient->connect(targetServerAddress, BLE_ADDR_TYPE_RANDOM)) {
             logMessage("Connection failed. Rescanning in 5 seconds.");

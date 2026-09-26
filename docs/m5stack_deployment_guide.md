@@ -9,9 +9,9 @@ This document summarizes the required Arduino IDE tool menu configurations and `
 | Setting Option (Tools Menu) | M5Stack Core Basic<br>(ESP32) | AtomS3 / AtomS3 Lite<br>(ESP32-S3) | Notes & Details |
 | :--- | :--- | :--- | :--- |
 | **Board** | `M5Stack-Core-ESP32` | `M5AtomS3` | Target microcontroller platform. |
-| **Flash Mode** | `DIO 80MHz` | `DIO 80MHz` | Must use `DIO` mode for stable booting on both devices. |
+| **Flash Mode** | `DIO 40MHz` | `DIO 80MHz` | Must use `DIO` mode for stable booting on both devices. |
 | **Flash Size** | `4MB (32Mb)` | `8MB (64Mb)` | Onboard SPI flash memory capacity. |
-| **Partition Scheme** | `Default 4MB with spiffs` | `Huge APP (3MB No OTA)` / `8M with spiffs` | Flash memory allocation profile. |
+| **Partition Scheme** | `Huge APP (3MB No OTA)` | `Huge APP (3MB No OTA)` / `8M with spiffs` | Flash memory allocation profile. |
 | **USB CDC On Boot** | N/A | `Enabled` | Enables native USB CDC serial output on ESP32-S3. |
 | **USB Mode** | N/A | `Hardware CDC and JTAG` | ESP32-S3 internal USB hardware interface mode. |
 | **Upload Mode** | `UART0` | `UART0 / Hardware CDC` | Flashing interface mode. |
@@ -29,7 +29,6 @@ This document summarizes the required Arduino IDE tool menu configurations and `
 | :--- | :--- | :--- | :--- |
 | **`bootloader.bin`** | **`0x1000`** | **`0x0`** | First-stage bootloader binary. |
 | **`partitions.bin`** | **`0x8000`** | **`0x8000`** | Flash partition layout table. |
-| **`boot_app0.bin`** | **`0xe000`** | **`0xe000`** | Boot image selection data. |
 | **`firmware.bin`** (`*.ino.bin`) | **`0x10000`** | **`0x10000`** | Main application executable binary. |
 
 ---
@@ -46,7 +45,6 @@ esptool.py --chip esp32 --port COM3 erase_flash
 esptool.py --chip esp32 --port COM3 write_flash \
   0x1000  bootloader.bin \
   0x8000  partitions.bin \
-  0xe000  boot_app0.bin \
   0x10000 firmware.bin
 ```
 
@@ -60,6 +58,5 @@ esptool.py --chip esp32s3 --port COM3 erase_flash
 esptool.py --chip esp32s3 --port COM3 write_flash \
   0x0     bootloader.bin \
   0x8000  partitions.bin \
-  0xe000  boot_app0.bin \
   0x10000 firmware.bin
 ```

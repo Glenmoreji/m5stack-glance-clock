@@ -104,15 +104,17 @@ void startCaptivePortal() {
         M5.update();
         
         if (M5.BtnA.wasPressed()) {
+            logMessage("[Portal] Erasing all NVS and Wi-Fi/BLE credentials...");
+            
+            // Erase entire NVS storage (clears all preferences and credentials)
+            nvs_flash_erase();
+            nvs_flash_init();
+
+            // Clear Wi-Fi internal credentials and disconnect
+            WiFi.disconnect(true, true);
+            WiFi.mode(WIFI_OFF);
+
             clearBondInformation();
-
-            preferences.begin("ble-config", false);
-            preferences.clear();
-            preferences.end();
-
-            preferences.begin("wifi-config", false);
-            preferences.clear();
-            preferences.end();
 
             delay(1000);
             ESP.restart();

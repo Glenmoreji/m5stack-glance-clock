@@ -4,6 +4,7 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include <Preferences.h>
+#include <nvs_flash.h>
 #include <time.h>
 #include <vector>
 #include <BLEDevice.h>

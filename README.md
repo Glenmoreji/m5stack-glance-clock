@@ -82,7 +82,6 @@ You can directly flash the firmware via a browser-based Web Flusher without sett
 | :--- | :--- | :--- |
 | `bootloader.bin` | **`0x1000`** | **`0x0`** |
 | `partitions.bin` | **`0x8000`** | **`0x8000`** |
-| `boot_app0.bin` *(if present)* | **`0xe000`** | **`0xe000`** |
 | `firmware.bin` | **`0x10000`** | **`0x10000`** |
 
 > ⚠️ **Note:** Pay close attention to the `bootloader.bin` address! Flashing to `0x1000` on an AtomS3 (ESP32-S3) will cause a boot checksum failure.
