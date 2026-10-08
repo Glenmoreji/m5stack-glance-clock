@@ -5,8 +5,9 @@
 // HTTP Server Configuration and Endpoint Declarations
 // ----------------------------------------------------------------------------
 
-// Sends a standard HTTP response with CORS headers and specified content type.
+// Function prototype declaration for sending standard HTTP responses
 void sendResponse(int status, const String& message, const String& contentType = "text/plain");
-
-// Initializes and registers all HTTP REST API endpoints and web server handlers.
+// Function prototype declaration for setting up and registering all REST API server routes
 void setupHttpServer();
+// Function prototype declaration for handling root URL HTTP GET requests
+void handleRoot();

@@ -22,6 +22,7 @@ Here is a [video](https://youtu.be/5_j0KFj5OKg) demonstrating control via a web 
 - **ESP32 Bridge**: Acts as a relay using M5Stack [Basic](https://docs.m5stack.com/en/core/basic) or [AtomS3 Lite](https://docs.m5stack.com/en/core/AtomS3%20Lite) to send data to the Glance Clock via BLE.
 - **Web API**: Can be operated through HTTP requests from browsers, home automation tools, or API clients.
 - **Captive Portal Support**: Easily configure SSID and passwords from a smartphone or PC during initial startup or Wi-Fi configuration.
+- **Automated Time Synchronization**: Timezone settings, including daylight saving time, are automatically configured via IP geolocation.
 
 ---
 
@@ -101,7 +102,7 @@ If you want to modify the code or build the binary yourself using Arduino IDE:
 3. Connect to the Wi-Fi network broadcasted by the M5Stack (`M5Stack-Setup`) from your smartphone or PC's Wi-Fi settings screen.
 4. The Captive Portal configuration screen will automatically pop up (or appear when you open a browser).
 5. Enter your home Wi-Fi SSID and password and save them; the M5Stack will then connect to your home network.
-6. Once the PIN code appears on the clock's display, enter `http://glance-clock.local/pin?code=[PIN-code]` to start operating as a bridge.
+6. Once the PIN code appears on the clock display, open [http://glance-clock.local/](http://glance-clock.local/) to enter the PIN code via the Web GUI, or directly access [http://glance-clock.local/pin?code=](http://glance-clock.local/pin?code=)[PIN-code] to start operating as a bridge.
 
 ---
 
@@ -109,7 +110,8 @@ If you want to modify the code or build the binary yourself using Arduino IDE:
 - **Calendar Integration Feature**:  
   Currently, the calendar integration feature (`/calendar`) is not correctly documented due to a lack of parsed information. Please use with caution.
 - **Timezone & NTP**:  
-  The timezone is hardcoded to Japan Standard Time (JST+9) at `9 * 3600` seconds using the NICT NTP server (`ntp.nict.jp`). If you use the device outside of Japan or in a different timezone, please update `gmtOffset_sec` as well as the NTP server.
+~~The timezone is hardcoded to Japan Standard Time (JST+9) at `9 * 3600` seconds using the NICT NTP server (`ntp.nict.jp`). If you use the device outside of Japan or in a different timezone, please update `gmtOffset_sec` as well as the NTP server.~~  
+  Timezone settings, including daylight saving time, are automatically configured via IP geolocation.
 
 ---
 
@@ -130,5 +132,7 @@ Use of this firmware, bridge software, and web tools is entirely at your own ris
 
 ---
 
-## License
-This software is released under the [MIT License](LICENSE).
+## License & API Terms
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+### Third-Party API Notice
+This software utilizes the free [ip-api.com](https://ip-api.com) API, which is restricted to non-commercial use. For commercial applications, you must obtain a paid API key and update the API endpoint accordingly.

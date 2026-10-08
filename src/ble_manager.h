@@ -2,20 +2,11 @@
 #include "config.h"
 
 // ----------------------------------------------------------------------------
-// BLE Bonding and Connection Management
+// BLE Manager Functions and Callbacks Declarations
 // ----------------------------------------------------------------------------
 
-// Checks if the target device is already bonded in NVS storage.
+// Function prototype declarations for bond checks, clearing bonds, BLE setup, and loop execution
 bool isAlreadyBonded();
-
-// Clears all stored BLE bonding information from the device.
 void clearBondInformation();
-
-// Handles deferred PIN response processing via ESP-IDF native stack.
-void handlePinResponse(uint32_t passKey);
-
-// Initializes BLE stack, security settings, local CTS server, and client scanning.
 void setupBLE();
-
-// Manages BLE state loop including connection handling, discovery, and rescanning.
 void loopBLE();

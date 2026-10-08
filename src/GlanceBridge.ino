@@ -4,50 +4,55 @@
 #include "./src/ble_manager.h"
 #include "./src/packet_builder.h"
 #include "./src/http_server.h"
+#include "./src/SharedData.h"
 
 // ----------------------------------------------------------------------------
 // Global Variable Definitions
 // ----------------------------------------------------------------------------
-Preferences preferences;
-String ssid = "";
-String password = "";
-const char* apSSID = "M5Stack-Setup";
-DNSServer dnsServer;
-WebServer server(80);
-const char* ntpServer         = "ntp.nict.jp";
-const long  gmtOffset_sec     = 9 * 3600; // Japan Standard Time (JST+9)
-const int   daylightOffset_sec = 0;
+Preferences preferences; // NVS preference storage instance
+String ssid = "";        // Wi-Fi SSID storage
+String password = "";    // Wi-Fi password storage
+const char* apSSID = "M5Stack-Setup"; // Access point name for captive portal
+DNSServer dnsServer;     // DNS server for captive portal redirection
+WebServer server(80);    // HTTP web server instance on port 80
+const char* ntpServer = "ntp.nict.jp"; // NTP time synchronization server address
 
-BLEClient*               pClient            = nullptr;
-BLERemoteCharacteristic* pRemoteChar        = nullptr;
-BLERemoteCharacteristic* pNotifyChar        = nullptr;
-BLEServer*               pServer            = nullptr;
-BLECharacteristic*       pCtsCharacteristic = nullptr;
+BLEClient* pClient = nullptr;                     // BLE client instance for connecting to peripherals
+BLERemoteCharacteristic* pRemoteChar = nullptr;   // BLE remote characteristic for writing commands
+BLERemoteCharacteristic* pNotifyChar = nullptr;   // BLE remote characteristic for notifications
+BLEServer* pServer = nullptr;                     // BLE server instance for local hosting
+BLECharacteristic* pCtsCharacteristic = nullptr;  // Current Time Service characteristic
 
-BLEAddress targetServerAddress("00:00:00:00:00:00");
-bool hasTargetAddress = false;
-String webPinCode = "";
-bool hasWebPin = false;
+BLEAddress targetServerAddress("00:00:00:00:00:00"); // Target BLE device MAC address holder
+bool hasTargetAddress = false; // Flag indicating if a target BLE address is loaded
+String webPinCode = "";        // PIN code entered via web interface
+bool hasWebPin = false;        // Flag indicating if web PIN has been provided
 
-DeviceSettings currentSettings;
-BleConnectionState bleState;
+SemaphoreHandle_t systemMutex = NULL; // FreeRTOS mutex for protecting shared system state
+BleConnectionState bleState;          // Current BLE connection and scanning state tracker
+bool isWaitingForPin = false;         // Flag indicating if the system is waiting for a PIN entry
 
 // ----------------------------------------------------------------------------
 // System Setup Initialization
 // ----------------------------------------------------------------------------
 void setup() {
-    delay(1000);
+    // Create FreeRTOS mutex for safe concurrent access
+    systemMutex = xSemaphoreCreateMutex();
+    vTaskDelay(pdMS_TO_TICKS(1000));
 
+    // Configure M5Stack hardware settings
     auto cfg = M5.config();
     cfg.serial_baudrate = 0;
     M5.begin(cfg);
     Serial.begin(115200);
 
+    // Wait for Serial monitor connection with a 3-second timeout
     unsigned long start = millis();
     while (!Serial && millis() - start < 3000) {
-        delay(10);
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 
+    // Initialize display properties, font size, and text scrolling area if display is active
     if (M5.Display.height() > 0) {
         M5.Display.setTextFont(2);
         M5.Display.setTextScroll(true);
@@ -56,7 +61,7 @@ void setup() {
         }
     }
 
-    // Initialize Wi-Fi connection or start Captive Portal
+    // 1. Initialize Wi-Fi connection or start Captive Portal
     initWiFi();
 
     // Set scroll area and draw initial screen header
@@ -66,52 +71,32 @@ void setup() {
     clearLogArea();
     updateScreenStatus();
 
-    // Synchronize system time with NTP server
-    if (WiFi.status() == WL_CONNECTED) {
-        configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-        M5.Display.print("\nSyncing time");
-        struct tm timeinfo;
-        int retry = 0;
-        
-        // Wait for response from NTP server (max 10 seconds)
-        while (!getLocalTime(&timeinfo)) {
-            delay(500);
-            if (Serial && Serial.availableForWrite() > 0) {
-                Serial.print(".");
-            }
-            M5.Display.print(".");
-            retry++;
-            if (retry > 20) {
-                logMessage("\nNTP sync timeout.");
-                break;
-            }
-        }
-        
-        if (retry <= 20) {
-            logMessage("\nTime synchronized.");
-        }
-    } else {
-        logMessage("\nSkipping NTP sync (No internet)");
-    }
-    
-    // Register HTTP server endpoint handlers
+    // 2. Initialize Timezone (NVS load -> IP fetch update -> NTP sync)
+    initTimeSync();
+
+    // 3. Register HTTP server endpoint handlers
     setupHttpServer();
 
-    // Load saved BLE target address from NVS Preferences
+    // 4. Load saved BLE target address from NVS Preferences
     preferences.begin("ble-config", true);
     String savedAddr = preferences.getString("targetAddr", "");
     preferences.end();
 
+    // Check and apply saved BLE target address if present
     if (savedAddr.length() > 0) {
+        xSemaphoreTake(systemMutex, portMAX_DELAY);
         targetServerAddress = BLEAddress(savedAddr.c_str());
         hasTargetAddress = true;
+        xSemaphoreGive(systemMutex);
         logMessage("Loaded saved BLE address: " + savedAddr);
     } else {
+        xSemaphoreTake(systemMutex, portMAX_DELAY);
         hasTargetAddress = false;
+        xSemaphoreGive(systemMutex);
         logMessage("No saved BLE address found. Performing initial dynamic discovery.");
     }
 
-    // Initialize BLE client and server stack
+    // 5. Initialize BLE client and server stack
     setupBLE();
     updateScreenStatus();
 }
@@ -120,40 +105,43 @@ void setup() {
 // Main Event Loop Execution
 // ----------------------------------------------------------------------------
 void loop() {
-    // Update and check button states first
+    // Update button states and device input handlers
     M5.update();
 
-    // Button A: Reset Wi-Fi and BLE credentials and restart device
-    if (M5.BtnA.wasPressed() || M5.BtnA.isPressed()) {
+    // Button A (1-sec pressed): Send CMD_CLEAR_BONDS, erase NVS, and restart device
+    if (M5.BtnA.pressedFor(1000)) {
         logMessage("[BtnA] Erasing all settings and NVS storage...");
 
-        // Send CMD_CLEAR_BONDS to the BLE device before restarting
+        // Prepare and send command packet to clear BLE bonding information
         uint8_t clearBondsCmd[] = {CMD_CLEAR_BONDS, 0x00, 0x00, 0x00};
         if (sendGlanceCommand(clearBondsCmd, sizeof(clearBondsCmd))) {
             logMessage("Sent CMD_CLEAR_BONDS successfully.");
-            delay(100);
+            vTaskDelay(pdMS_TO_TICKS(100));
         } else {
             logMessage("Failed to send CMD_CLEAR_BONDS.");
         }
-    
-        // Initialize and erase the entire ESP32 NVS (non-volatile storage)
+        
+        // Erase entire NVS flash memory and re-initialize
         nvs_flash_erase();
         nvs_flash_init();
 
-        // Stop Wi-Fi and various servers
+        // Stop servers and disconnect Wi-Fi before rebooting
         dnsServer.stop();
         server.stop();
         WiFi.disconnect(true, true);
         WiFi.mode(WIFI_OFF);
-        delay(500);
+        vTaskDelay(pdMS_TO_TICKS(500));
 
-        // Restart device
         ESP.restart();
     }
 
-    // Button B: Send test custom notice packet
+    // Button B: Send test custom notice packet (Guard with NTP check)
     if (M5.BtnB.wasPressed()) {
-        sendCustomNoticeCommand("I'm back!", 1, 5, 23, 1, 130);
+        if (!sharedData.isNtpSynced()) {
+            logMessage("Notice ignored: NTP not synced yet.");
+        } else {
+            sendCustomNoticeCommand("I'm back!", 1, 5, 23, 1, 130);
+        }
     }
 
     // Button C: Force CTS time synchronization notification
@@ -171,14 +159,16 @@ void loop() {
             WiFi.reconnect();
         }
     } else {
+        // Handle incoming HTTP client requests when connected
         server.handleClient();
+        
+        // Check daily timezone synchronization via IP geolocation
+        checkDailyTimezoneSync();
     }
-
-    // Update button state again to prevent input drops during processing
-    M5.update();
 
     // Execute BLE connection, scanning, and state machine loop
     loopBLE();
 
-    delay(10);
+    // Yield CPU control briefly using FreeRTOS task delay
+    vTaskDelay(pdMS_TO_TICKS(10));
 }
