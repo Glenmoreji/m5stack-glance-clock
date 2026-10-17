@@ -99,7 +99,15 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 <body>
 
     <h1>Glance Clock Control Panel</h1>
-
+    
+    <!-- Connection Settings -->
+    <div class="config-box">
+        <div class="form-group" style="margin-bottom: 0;">
+            <label for="m5Ip">M5Stack IP Address</label>
+            <input type="text" id="m5Ip" value="%IP_ADDRESS%" placeholder="glance-clock.local or IP" readonly>
+        </div>
+    </div>
+    
     <!-- 1. Custom Notice Command -->
     <div class="section">
         <h2>1. Custom Notice Command</h2>
@@ -292,9 +300,9 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
                 <div style="display: flex; gap: 8px; align-items: center; flex-wrap: wrap;">
                     <button onclick="setAlarm()">Set Alarm</button>
                     <!-- Stop Alarm: CMD_ALARM_STOP (byte=20) -->
-                    <button class="secondary" onclick="sendQuick('cmd?byte=20')">Stop Alarm</button>
+                    <button class="secondary" onclick="sendQuick('quick?byte=20')">Stop Alarm</button>
                     <!-- Alarm Clear: CMD_ALARM_CLEAR (byte=21) -->
-                    <button class="secondary" onclick="sendQuick('cmd?byte=21')">Alarm Clear</button>
+                    <button class="secondary" onclick="sendQuick('quick?byte=21')">Alarm Clear</button>
                 </div>
             </div>
 
@@ -306,7 +314,7 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
                 <div style="display: flex; gap: 8px; align-items: center;">
                     <button onclick="setTimer()">Start Timer</button>
                     <!-- Stop Timer: CMD_TIMER_STOP (byte=10) -->
-                    <button class="secondary" onclick="sendQuick('cmd?byte=10')">Stop Timer</button>
+                    <button class="secondary" onclick="sendQuick('quick?byte=10')">Stop Timer</button>
                 </div>
             </div>
         </div>
@@ -317,15 +325,13 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
         <h2>4. Quick Control Commands</h2>
         <div class="grid">
             <!-- Scenes Stop: byte=30 -->
-            <button class="secondary" onclick="sendQuick('cmd?byte=30')">Scenes Stop</button>
+            <button class="secondary" onclick="sendQuick('quick?byte=30')">Scenes Stop</button>
             <!-- Scenes Start: byte=31 -->
-            <button class="secondary" onclick="sendQuick('cmd?byte=31')">Scenes Start</button>
+            <button class="secondary" onclick="sendQuick('quick?byte=31')">Scenes Start</button>
             <!-- Scenes Clear: byte=32 -->
-            <button class="secondary" onclick="sendQuick('cmd?byte=32')">Scenes Clear</button>
+            <button class="secondary" onclick="sendQuick('quick?byte=32')">Scenes Clear</button>
             <!-- Update & Refresh: byte=35 -->
-            <button class="secondary" onclick="sendQuick('cmd?byte=35')">Update & Refresh</button>
-            <!-- Clear Bonds: byte=42 -->
-            <button class="danger" onclick="sendQuick('cmd?byte=42')">Clear Bonds</button>
+            <button class="secondary" onclick="sendQuick('quick?byte=35')">Update & Refresh</button>
         </div>
     </div>
 
@@ -355,19 +361,14 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
             logBox.innerHTML += `[${new Date().toLocaleTimeString()}] ${message}<br>`;
             logBox.scrollTop = logBox.scrollHeight;
         }
+        
+        // Send PIN code function (/pin endpoint)
+        function sendPinCode() {
+            const pin = document.getElementById('pinCode').value;
 
-        // Send custom notice function (/notice endpoint)
-        function sendNotice() {
-            const text = encodeURIComponent(document.getElementById('noticeText').value);
-            const anim = document.getElementById('noticeAnim').value;
-            const sound = document.getElementById('noticeSound').value;
-            const color = document.getElementById('noticeColor').value;
-            const mod = document.getElementById('noticeMod').value;
-            const icon = document.getElementById('noticeIcon').value;
+            const url = `/pin?code=${pin}`;
+            log(`Sending PIN Request: ${url}`);
 
-            const url = `/notice?text=${text}&anim=${anim}&sound=${sound}&color=${color}&mod=${mod}&icon=${icon}`;
-            log(`Sending Notice Request: ${url}`);
-            
             fetch(url, { method: 'GET' })
                 .then(res => res.text())
                 .then(data => log(`Success: ${data || 'OK'}`))
@@ -391,15 +392,19 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
                 .then(data => log(`Success: ${data || 'OK'}`))
                 .catch(err => log(`Error: ${err.message}`));
         }
+        
+        // Send custom notice function (/notice endpoint)
+        function sendNotice() {
+            const text = encodeURIComponent(document.getElementById('noticeText').value);
+            const anim = document.getElementById('noticeAnim').value;
+            const sound = document.getElementById('noticeSound').value;
+            const color = document.getElementById('noticeColor').value;
+            const mod = document.getElementById('noticeMod').value;
+            const icon = document.getElementById('noticeIcon').value;
 
-        // Set alarm function (/alarm endpoint)
-        function setAlarm() {
-            const alarmHour = document.getElementById('Hour').value;
-            const alarmMin = document.getElementById('Min').value;
-
-            const url = `/alarm?alarmHour=${alarmHour}&alarmMin=${alarmMin}`;
-            log(`Sending Alarm Set Request: ${url}`);
-
+            const url = `/notice?text=${text}&anim=${anim}&sound=${sound}&color=${color}&mod=${mod}&icon=${icon}`;
+            log(`Sending Notice Request: ${url}`);
+            
             fetch(url, { method: 'GET' })
                 .then(res => res.text())
                 .then(data => log(`Success: ${data || 'OK'}`))
@@ -419,12 +424,13 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
                 .catch(err => log(`Error: ${err.message}`));
         }
 
-        // Send PIN code function (/pin endpoint)
-        function sendPinCode() {
-            const pin = document.getElementById('pinCode').value;
+        // Set alarm function (/alarm endpoint)
+        function setAlarm() {
+            const alarmHour = document.getElementById('Hour').value;
+            const alarmMin = document.getElementById('Min').value;
 
-            const url = `/pin?code=${pin}`;
-            log(`Sending PIN Request: ${url}`);
+            const url = `/alarm?alarmHour=${alarmHour}&alarmMin=${alarmMin}`;
+            log(`Sending Alarm Set Request: ${url}`);
 
             fetch(url, { method: 'GET' })
                 .then(res => res.text())
@@ -442,6 +448,7 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
                 .then(data => log(`Success: ${data || 'OK'}`))
                 .catch(err => log(`Error: ${err.message}`));
         }
+
     </script>
 </body>
 </html>
@@ -461,8 +468,17 @@ void sendResponse(int status, const String& message, const String& contentType) 
 // Handle Root URL HTTP GET Requests
 // ----------------------------------------------------------------------------
 void handleRoot() {
-    // Serve HTML content stored in flash memory
-    server.send_P(200, "text/html", HTML_INDEX);
+    // Get HTML_INDEX from flash memory as a String
+    String html = FPSTR(HTML_INDEX);
+    
+    // Get the current IP address (or fallback to hostname if not connected)
+    String currentIp = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "glance-clock.local";
+    
+    // Replace the placeholder in the HTML with the actual IP address
+    html.replace("%IP_ADDRESS%", currentIp);
+    
+    // Send the generated HTML response to the client
+    server.send(200, "text/html", html);
 }
 
 // ----------------------------------------------------------------------------
@@ -682,7 +698,7 @@ void setupHttpServer() {
         uint32_t maxColor = server.hasArg("maxColor") ? strtoul(server.arg("maxColor").c_str(), NULL, 16) : 0xFF0000;
         uint32_t minColor = server.hasArg("minColor") ? strtoul(server.arg("minColor").c_str(), NULL, 16) : 0x0000FF;
         int16_t maxValue  = server.hasArg("maxValue") ? server.arg("maxValue").toInt() : 30;
-        int16_t minValue  = server.hasArg("minValue") ? server.arg("minValue").toInt() : 0;
+        int16_t minValue  = server.hasArg("minValue") ? server.arg("minValue").toInt() : -30;
         String message    = server.hasArg("message") ? server.arg("message") : "\xC2\x8F\x08\xC2\xB0";
 
         // Retrieve comma-separated values string or fall back to default 24-element array
@@ -825,8 +841,8 @@ void setupHttpServer() {
         }
     });
 
-    // Unified generic quick command endpoint: http://glance-clock.local/cmd?byte=31
-    server.on("/cmd", HTTP_GET, []() {
+    // Unified generic quick command endpoint: http://glance-clock.local/quick?byte=31
+    server.on("/quick", HTTP_GET, []() {
         // Validate presence of the 'byte' parameter
         if (!server.hasArg("byte")) {
             handleErrorResponse(400, "Error: Missing byte parameter");
@@ -866,7 +882,7 @@ void setupHttpServer() {
         // Transmit command via BLE and send HTTP response
         if (sendGlanceCommand(cmd, sizeof(cmd))) {
             sendResponse(200, "OK: " + label);
-            M5.Display.printf("Cmd: %s\n", label.c_str());
+            M5.Display.printf("Quick: %s\n", label.c_str());
         } else {
             handleErrorResponse(500, "Error: BLE send failed", label + " Failed");
         }

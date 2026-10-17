@@ -8,13 +8,9 @@
 #include <nvs_flash.h>
 #include <time.h>
 #include <vector>
-#include <BLEDevice.h>
-#include <BLEUtils.h>
-#include <BLEServer.h>
-#include <BLEClient.h>
-#include <BLE2902.h>
-#include "esp_gap_ble_api.h"
+#include <NimBLEDevice.h>
 #include <stdarg.h>
+#include <PubSubClient.h>
 
 // ----------------------------------------------------------------------------
 // Notification Behavior Configuration
@@ -35,13 +31,13 @@ extern DNSServer dnsServer;
 extern WebServer server;
 extern const char* ntpServer;
 
-extern BLEClient* pClient;
-extern BLERemoteCharacteristic* pRemoteChar;
-extern BLERemoteCharacteristic* pNotifyChar;
-extern BLEServer* pServer;
-extern BLECharacteristic* pCtsCharacteristic;
+extern NimBLEClient* pClient;
+extern NimBLERemoteCharacteristic* pRemoteChar;
+extern NimBLERemoteCharacteristic* pNotifyChar;
+extern NimBLEServer* pServer;
+extern NimBLECharacteristic* pCtsCharacteristic;
 
-extern BLEAddress targetServerAddress;
+extern NimBLEAddress targetServerAddress;
 extern bool hasTargetAddress;
 extern String webPinCode;
 extern bool hasWebPin;
@@ -51,6 +47,12 @@ extern SemaphoreHandle_t systemMutex;
 
 // Async PIN entry state tracking variable
 extern bool isWaitingForPin;
+
+// MQTT Client Configuration and Instances
+extern WiFiClient espClient;
+extern PubSubClient mqttClient;
+extern String mqttServer;
+extern int mqttPort;
 
 // ----------------------------------------------------------------------------
 // BLE Service and Characteristic UUID Constants

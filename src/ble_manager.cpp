@@ -3,27 +3,57 @@
 #include "packet_builder.h"
 
 // ----------------------------------------------------------------------------
+// Handles read requests and subscription events for the local Current Time Service (CTS).
+// ----------------------------------------------------------------------------
+class CTSCallbacks : public NimBLECharacteristicCallbacks {
+    void onRead(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo) override {
+        logMessage("CTS READ OCCURRED");
+
+        uint8_t currentTime[10];
+        // Create current NTP time data and return it to the requesting peer on read
+        if (!createCtsTimeData(currentTime)) {
+            logMessage(" -> Failed to get NTP time on Read.");
+            return;
+        }
+        
+        pCharacteristic->setValue(currentTime, 10);
+    }
+
+    void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
+
+    }
+};
+
+// ----------------------------------------------------------------------------
+// Server connection callbacks to verify if the clock connects to the local CTS server.
+// ----------------------------------------------------------------------------
+class MyServerCallbacks : public NimBLEServerCallbacks {
+    void onConnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo) override {
+        logMessage("[CTS] Client connected");
+    }
+
+    void onDisconnect(NimBLEServer* pServer, NimBLEConnInfo& connInfo, int reason) override {
+        logMessage("[CTS] Client disconnected");
+    }
+};
+static MyServerCallbacks serverCallbacks;
+
+// ----------------------------------------------------------------------------
 // Checks if the target device is already bonded in NVS storage.
 // ----------------------------------------------------------------------------
 bool isAlreadyBonded() {
-    // Retrieve total number of bonded BLE devices stored in NVS
-    int dev_num = esp_ble_get_bond_device_num();
+    int dev_num = NimBLEDevice::getNumBonds();
     if (dev_num <= 0) return false;
-
-    // Fetch list of bonded devices from ESP BLE stack
-    std::vector<esp_ble_bond_dev_t> dev_list(dev_num);
-    esp_ble_get_bond_device_list(&dev_num, dev_list.data());
 
     // Obtain target device BLE address under mutex protection
     xSemaphoreTake(systemMutex, portMAX_DELAY);
-    uint8_t* targetNative = (uint8_t*)targetServerAddress.getNative();
-    esp_bd_addr_t targetBda;
-    memcpy(targetBda, targetNative, 6);
+    NimBLEAddress targetAddr = targetServerAddress;
     xSemaphoreGive(systemMutex);
 
     // Compare bonded device addresses against target address
     for (int i = 0; i < dev_num; i++) {
-        if (memcmp(dev_list[i].bd_addr, targetBda, 6) == 0) {
+        NimBLEAddress bondedAddr = NimBLEDevice::getBondedAddress(i);
+        if (bondedAddr == targetAddr) {
             return true;
         }
     }
@@ -34,28 +64,21 @@ bool isAlreadyBonded() {
 // Clears all stored BLE bonding information from the device.
 // ----------------------------------------------------------------------------
 void clearBondInformation() {
-    // Retrieve number of currently bonded devices
-    int dev_num = esp_ble_get_bond_device_num();
+    int dev_num = NimBLEDevice::getNumBonds();
     if (dev_num <= 0) {
         logMessage("[BtnA] No bonding info to clear.", "[BtnA] No bonding info to clear.");
         return;
     }
 
-    // Populate device list and iterate through each to remove bonding records
-    std::vector<esp_ble_bond_dev_t> dev_list(dev_num);
-    esp_ble_get_bond_device_list(&dev_num, dev_list.data());
-
-    for (int i = 0; i < dev_num; i++) {
-        esp_ble_remove_bond_device(dev_list[i].bd_addr);
-    }
-    
-    logMessage("[BtnA] Cleared bonding info.", "[BtnA] Cleared bonding info.");
+    // Delete existing bond record from storage
+    NimBLEDevice::deleteBond(NimBLEDevice::getBondedAddress(0));
+    logMessage("[BtnA] Cleared bonding info.", "Bonds cleared.");
 }
 
 // ----------------------------------------------------------------------------
 // Processes raw notification data received from characteristic FC78.
 // ----------------------------------------------------------------------------
-void notifyCallbackFC78(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
+void notifyCallbackFC78(NimBLERemoteCharacteristic* pBLERemoteCharacteristic, uint8_t* pData, size_t length, bool isNotify) {
     // If Serial monitor is active, format and print incoming notification payload bytes as a hex string
     if (Serial) {
         String hexStr = "[fc78] Rx: ";
@@ -70,7 +93,7 @@ void notifyCallbackFC78(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8
     // Retrieve authentication status, remote characteristic, and notification state under mutex protection
     xSemaphoreTake(systemMutex, portMAX_DELAY);
     bool authReady = bleState.isAuthReady;
-    BLERemoteCharacteristic* remoteChar = pRemoteChar;
+    NimBLERemoteCharacteristic* remoteChar = pRemoteChar;
     bool isFirst = bleState.isFirstPairing || !bleState.hasReceivedNotification;
     bleState.hasReceivedNotification = true;
     xSemaphoreGive(systemMutex);
@@ -93,10 +116,45 @@ void notifyCallbackFC78(BLERemoteCharacteristic* pBLERemoteCharacteristic, uint8
 }
 
 // ----------------------------------------------------------------------------
-// Security callbacks for handling PassKey entry and authentication events.
+// Manages BLE client connection status, security encryption, and PassKey entry.
 // ----------------------------------------------------------------------------
-class MySecurityCallbacks : public BLESecurityCallbacks {
-    uint32_t onPassKeyRequest() override {
+class MyClientCallbacks : public NimBLEClientCallbacks {
+    void onConnect(NimBLEClient* pclient) override {
+        // Check if device is already bonded
+        bool bonded = isAlreadyBonded();
+
+        // Update connection state flags upon successful connection
+        xSemaphoreTake(systemMutex, portMAX_DELAY);
+        bleState.connected = true;
+        bleState.isAuthReady = false;
+        bleState.needCtsSync = false;
+        bleState.hasReceivedNotification = false;
+        bleState.isFirstPairing = !bonded;
+        xSemaphoreGive(systemMutex);
+        
+        logMessage("Connected to Glance Clock.", "Connected");
+        updateScreenStatus();
+    }
+
+    void onDisconnect(NimBLEClient* pclient, int reason) override {
+        // Reset connection and characteristic pointers and schedule reconnection scan upon disconnection
+        xSemaphoreTake(systemMutex, portMAX_DELAY);
+        bleState.connected = false;
+        bleState.isAuthReady = false;
+        bleState.needCtsSync = false;
+        bleState.hasReceivedNotification = false;
+        isWaitingForPin = false;
+        bleState.doScan = true;
+        bleState.disconnectTime = millis();
+        pRemoteChar = nullptr;
+        pNotifyChar = nullptr;
+        xSemaphoreGive(systemMutex);
+        
+        logMessage("Disconnected. Rescan in 5s.", "Disconnected");
+        updateScreenStatus();
+    }
+
+    void onPassKeyEntry(NimBLEConnInfo& connInfo) override {
         logMessage("\n[SECURITY] Enter 6-digit PIN code (via Web/Serial):", "Enter PIN (20s)");
         logMessage(" Web: http://<IP>/pin?code=XXXXXX or Serial input");
 
@@ -128,7 +186,8 @@ class MySecurityCallbacks : public BLESecurityCallbacks {
             if (pinReady) {
                 passKey = pinStr.toInt();
                 logMessage(" -> PIN code received via Web: " + String(passKey));
-                return passKey;
+                NimBLEDevice::injectPassKey(connInfo, passKey);
+                return;
             }
 
             // Check if a PIN code has been entered via Serial input
@@ -141,7 +200,8 @@ class MySecurityCallbacks : public BLESecurityCallbacks {
                     isWaitingForPin = false;
                     xSemaphoreGive(systemMutex);
                     logMessage(" -> PIN code received via Serial: " + String(passKey));
-                    return passKey;
+                    NimBLEDevice::injectPassKey(connInfo, passKey);
+                    return;
                 }
             }
 
@@ -153,140 +213,63 @@ class MySecurityCallbacks : public BLESecurityCallbacks {
         xSemaphoreTake(systemMutex, portMAX_DELAY);
         isWaitingForPin = false;
         xSemaphoreGive(systemMutex);
-        return 0;
+        NimBLEDevice::injectPassKey(connInfo, 0);
     }
 
-    void onPassKeyNotify(uint32_t pass_key) override {}
-    
-    bool onConfirmPIN(uint32_t pin) override { 
-        return true; 
-    }
-    
-    bool onSecurityRequest() override { 
-        return true; 
-    }
-
-    void onAuthenticationComplete(esp_ble_auth_cmpl_t cmpl) override {
+    void onAuthenticationComplete(NimBLEConnInfo& connInfo) override {
         // Update authentication state flags upon completion event
         xSemaphoreTake(systemMutex, portMAX_DELAY);
         isWaitingForPin = false;
-        if (cmpl.success) {
+        if (connInfo.isEncrypted()) {
             bleState.isAuthReady = true;
             xSemaphoreGive(systemMutex);
             logMessage(" -> Pairing/Encryption success!", " -> Pairing/Encryption success!");
         } else {
             bleState.isAuthReady = false;
             xSemaphoreGive(systemMutex);
-            logMessage(" -> Pairing failed (Reason: 0x" + String(cmpl.fail_reason, HEX) + ")", 
-                       " -> Pairing failed (0x" + String(cmpl.fail_reason, HEX) + ")");
+            logMessage(" -> Pairing failed. Clearing bond and disconnecting.", " -> Pairing failed");
+            NimBLEDevice::deleteBond(connInfo.getAddress());
+            if (pClient != nullptr) {
+                pClient->disconnect();
+            }
         }
     }
 };
-static MySecurityCallbacks securityCallbacks;
-
-// ----------------------------------------------------------------------------
-// Handles read requests for the local Current Time Service (CTS).
-// ----------------------------------------------------------------------------
-class CTSCallbacks : public BLECharacteristicCallbacks {
-    void onRead(BLECharacteristic* pCharacteristic) override {
-        uint8_t currentTime[10];
-        // Create current NTP time data and return it to the requesting peer on read
-        if (!createCtsTimeData(currentTime)) {
-            logMessage(" -> Failed to get NTP time on Read.");
-            return;
-        }
-        
-        pCharacteristic->setValue(currentTime, 10);
-        logMessage(" -> Returned CTS time data to clock (Read).");
-    }
-};
-
-// ----------------------------------------------------------------------------
-// Manages BLE client connection status and security encryption requests.
-// ----------------------------------------------------------------------------
-class MyClientCallbacks : public BLEClientCallbacks {
-    void onConnect(BLEClient* pclient) override {
-        // Check if device is already bonded
-        bool bonded = isAlreadyBonded();
-
-        // Update connection state flags upon successful connection
-        xSemaphoreTake(systemMutex, portMAX_DELAY);
-        bleState.connected = true;
-        bleState.isAuthReady = bonded; // Set auth ready directly if already bonded
-        bleState.needCtsSync = false;
-        bleState.hasReceivedNotification = false;
-        xSemaphoreGive(systemMutex);
-        
-        logMessage("Connected to Glance Clock.", "Connected to Glance Clock.");
-        updateScreenStatus();
-        
-        uint8_t* peerAddr = (uint8_t*)pclient->getPeerAddress().getNative();
-        // If already bonded, request standard encryption; otherwise request MITM encrypted pairing
-        if (bonded) {
-            logMessage("Already bonded. Requesting encryption...");
-            xSemaphoreTake(systemMutex, portMAX_DELAY);
-            bleState.isFirstPairing = false;
-            xSemaphoreGive(systemMutex);
-            esp_ble_set_encryption(peerAddr, ESP_BLE_SEC_ENCRYPT);
-        } else {
-            logMessage("New pairing required. Requesting MITM encryption...");
-            xSemaphoreTake(systemMutex, portMAX_DELAY);
-            bleState.isFirstPairing = true;
-            xSemaphoreGive(systemMutex);
-            esp_ble_set_encryption(peerAddr, ESP_BLE_SEC_ENCRYPT_MITM);
-        }
-    }
-
-    void onDisconnect(BLEClient* pclient) override {
-        // Reset connection and characteristic pointers and schedule reconnection scan upon disconnection
-        xSemaphoreTake(systemMutex, portMAX_DELAY);
-        bleState.connected = false;
-        bleState.isAuthReady = false;
-        bleState.needCtsSync = false;
-        bleState.hasReceivedNotification = false;
-        isWaitingForPin = false;
-        bleState.doScan = true;
-        bleState.disconnectTime = millis();
-        pRemoteChar = nullptr;
-        pNotifyChar = nullptr;
-        xSemaphoreGive(systemMutex);
-        
-        logMessage("Disconnected. Rescan in 5s.", "Disconnected. Rescan in 5s.");
-        updateScreenStatus();
-    }
-};
+static MyClientCallbacks clientCallbacks;
 
 // ----------------------------------------------------------------------------
 // Processes BLE advertising devices during scanning to locate target device.
 // ----------------------------------------------------------------------------
-class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
-    void onResult(BLEAdvertisedDevice advertisedDevice) override {
-        xSemaphoreTake(systemMutex, portMAX_DELAY);
-        bool hasAddr = hasTargetAddress;
-        BLEAddress targetAddr = targetServerAddress;
-        xSemaphoreGive(systemMutex);
-
-        // If a target address is already saved, check if the advertised device matches it
-        if (hasAddr) {
-            if (advertisedDevice.getAddress().equals(targetAddr)) {
-                BLEDevice::getScan()->stop();
-                xSemaphoreTake(systemMutex, portMAX_DELAY);
-                bleState.doConnect = true;
-                xSemaphoreGive(systemMutex);
-                logMessage("Found saved target Glance Clock.", "Found Saved Glance Clock.");
-            }
-            return;
+class MyAdvertisedDeviceCallbacks : public NimBLEScanCallbacks {
+    void onResult(const NimBLEAdvertisedDevice* advertisedDevice) override {
+        if (Serial) {
+            String devName = advertisedDevice->haveName() ? advertisedDevice->getName().c_str() : "Unknown";
+            Serial.printf("Found BLE -> Addr: %s, Name: %s\n", 
+                advertisedDevice->getAddress().toString().c_str(), devName.c_str());
         }
 
-        // If no address is saved, scan for the Glance service UUID to identify the clock
-        if (advertisedDevice.haveServiceUUID() && advertisedDevice.isAdvertisingService(BLEUUID(GLANCE_SERVICE_UUID))) {
-            BLEDevice::getScan()->stop();
+        xSemaphoreTake(systemMutex, portMAX_DELAY);
+        bool hasAddr = hasTargetAddress;
+        NimBLEAddress targetAddr = targetServerAddress;
+        xSemaphoreGive(systemMutex);
+
+        bool match = false;
+        // If a target address is already saved, check if the advertised device matches it
+        if (hasAddr && advertisedDevice->getAddress() == targetAddr) {
+            match = true;
+        } else if (advertisedDevice->haveName() && advertisedDevice->getName() == "GlanceClock") {
+            match = true;
+        }
+
+        // If target is matched, stop scan and save configuration
+        if (match) {
+            NimBLEDevice::getScan()->stop();
             
             xSemaphoreTake(systemMutex, portMAX_DELAY);
-            targetServerAddress = advertisedDevice.getAddress();
+            targetServerAddress = advertisedDevice->getAddress();
             hasTargetAddress = true;
             bleState.doConnect = true;
-            BLEAddress newAddr = targetServerAddress;
+            NimBLEAddress newAddr = targetServerAddress;
             xSemaphoreGive(systemMutex);
 
             // Save the discovered device address to Preferences NVS storage
@@ -294,65 +277,50 @@ class MyAdvertisedDeviceCallbacks : public BLEAdvertisedDeviceCallbacks {
             preferences.putString("targetAddr", newAddr.toString().c_str());
             preferences.end();
 
-            logMessage("Initial scan success: Found target and saved address [" + String(newAddr.toString().c_str()) + "]", 
+            logMessage("Glance Clock found & saved [" + String(newAddr.toString().c_str()) + "]", 
                        "Found & Saved: " + String(newAddr.toString().c_str()));
         }
     }
 };
 
 // ----------------------------------------------------------------------------
-// Scan complete callback handler for non-blocking asynchronous scans.
-// ----------------------------------------------------------------------------
-void scanCompleteCB(BLEScanResults foundDevices) {
-    xSemaphoreTake(systemMutex, portMAX_DELAY);
-    bool hasAddr = hasTargetAddress;
-    bool isConnected = bleState.connected;
-    xSemaphoreGive(systemMutex);
-
-    // If target is not found and not connected after scan completion, schedule a rescan retry
-    if (!hasAddr && !isConnected) {
-        xSemaphoreTake(systemMutex, portMAX_DELAY);
-        bleState.doScan = true;
-        bleState.disconnectTime = millis();
-        xSemaphoreGive(systemMutex);
-        logMessage("Scan completed. Target not found, retrying...");
-    }
-}
-
-// ----------------------------------------------------------------------------
 // Initializes BLE stack, security settings, local CTS server, and client scan.
 // ----------------------------------------------------------------------------
 void setupBLE() {
-    BLEDevice::init("M5Stack-Bridge");
-    BLEDevice::setMTU(512);
+    NimBLEDevice::init("M5Stack-Bridge");
+    NimBLEDevice::setMTU(512);
 
     // Configure BLE security parameters and authentication requirements
-    BLESecurity security;
-    security.setAuthenticationMode(ESP_LE_AUTH_REQ_SC_MITM_BOND);
-    // CAUTION: Never change the BLE security IO Capability from ESP_IO_CAP_KBDISP.
-    security.setCapability(ESP_IO_CAP_KBDISP);
-    security.setInitEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
-    security.setRespEncryptionKey(ESP_BLE_ENC_KEY_MASK | ESP_BLE_ID_KEY_MASK);
-    BLEDevice::setSecurityCallbacks(&securityCallbacks);
+    NimBLEDevice::setSecurityAuth(true, true, true);
+    // CAUTION: Never change the BLE security IO Capability from BLE_HS_IO_KEYBOARD_DISPLAY.
+    NimBLEDevice::setSecurityIOCap(BLE_HS_IO_KEYBOARD_DISPLAY);
 
-    // Create local BLE server and Current Time Service (CTS) characteristic
-    pServer = BLEDevice::createServer();
-    BLEService* pCtsService = pServer->createService("1805");
+    // Initialize local CTS server to allow the clock to read/subscribe to current time (UUID 1805 / 2a2b)
+    pServer = NimBLEDevice::createServer();
+    pServer->setCallbacks(&serverCallbacks);
+
+    NimBLEService* pCtsService = pServer->createService("1805");
     pCtsCharacteristic = pCtsService->createCharacteristic(
         "2a2b",
-        BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_NOTIFY
+        NIMBLE_PROPERTY::READ | NIMBLE_PROPERTY::NOTIFY
     );
     pCtsCharacteristic->setCallbacks(new CTSCallbacks());
-    pCtsCharacteristic->addDescriptor(new BLE2902());
+    pCtsCharacteristic->createDescriptor("2902");
     pCtsService->start();
 
+    // Start advertising local services including CTS (1805)
+    NimBLEAdvertising* pAdvertising = NimBLEDevice::getAdvertising();
+    pAdvertising->addServiceUUID(pCtsService->getUUID());
+    pAdvertising->addServiceUUID(GLANCE_SERVICE_UUID);
+    pAdvertising->start();
+
     // Create BLE client instance and register client callbacks
-    pClient = BLEDevice::createClient();
-    pClient->setClientCallbacks(new MyClientCallbacks());
+    pClient = NimBLEDevice::createClient();
+    pClient->setClientCallbacks(&clientCallbacks);
 
     // Configure BLE scanner and advertised device callbacks
-    BLEScan* pBLEScan = BLEDevice::getScan();
-    pBLEScan->setAdvertisedDeviceCallbacks(new MyAdvertisedDeviceCallbacks());
+    NimBLEScan* pBLEScan = NimBLEDevice::getScan();
+    pBLEScan->setScanCallbacks(new MyAdvertisedDeviceCallbacks(), false);
     pBLEScan->setActiveScan(true);
 
     xSemaphoreTake(systemMutex, portMAX_DELAY);
@@ -365,8 +333,14 @@ void setupBLE() {
         bleState.doConnect = true;
         xSemaphoreGive(systemMutex);
     } else {
-        logMessage("Starting initial asynchronous BLE scan...");
-        pBLEScan->start(5, scanCompleteCB, false);
+        logMessage("Starting initial BLE scan (10s)...");
+        pBLEScan->start(10000, false);
+        xSemaphoreTake(systemMutex, portMAX_DELAY);
+        if (!hasTargetAddress && !bleState.connected) {
+            bleState.doScan = true;
+            bleState.disconnectTime = millis();
+        }
+        xSemaphoreGive(systemMutex);
     }
 }
 
@@ -380,46 +354,50 @@ void loopBLE() {
     bool doConnect = bleState.doConnect;
     bool doScan = bleState.doScan;
     unsigned long discTime = bleState.disconnectTime;
-    BLEAddress targetAddr = targetServerAddress;
-    BLERemoteCharacteristic* currentRemoteCharCheck = pRemoteChar;
+    NimBLEAddress targetAddr = targetServerAddress;
+    NimBLERemoteCharacteristic* currentRemoteCharCheck = pRemoteChar;
+    NimBLEClient* localClient = pClient;
     xSemaphoreGive(systemMutex);
 
+    // Verify encryption status from connection info if not yet marked ready
+    if (connected && !authReady && localClient != nullptr) {
+        auto connInfo = localClient->getConnInfo();
+        if (connInfo.isEncrypted()) {
+            xSemaphoreTake(systemMutex, portMAX_DELAY);
+            bleState.isAuthReady = true;
+            xSemaphoreGive(systemMutex);
+        }
+    }
+
     // When connected and authenticated, discover remote services and characteristics if not yet discovered
-    if (connected && authReady && currentRemoteCharCheck == nullptr) {
+    if (connected && authReady && currentRemoteCharCheck == nullptr && localClient != nullptr) {
         vTaskDelay(pdMS_TO_TICKS(500));
 
-        BLERemoteService* pRemoteService = pClient->getService(GLANCE_SERVICE_UUID);
+        NimBLERemoteService* pRemoteService = localClient->getService(GLANCE_SERVICE_UUID);
         if (pRemoteService != nullptr) {
             // Obtain main communication remote characteristic first
-            BLERemoteCharacteristic* tempRemoteChar = pRemoteService->getCharacteristic(GLANCE_CHAR_UUID);
+            NimBLERemoteCharacteristic* tempRemoteChar = pRemoteService->getCharacteristic(GLANCE_CHAR_UUID);
             if (tempRemoteChar != nullptr) {
                 xSemaphoreTake(systemMutex, portMAX_DELAY);
                 pRemoteChar = tempRemoteChar;
                 xSemaphoreGive(systemMutex);
-                
-                logMessage("Successfully obtained communication characteristic.");
             }
 
             // Register for notifications on the notification characteristic (fc78) after pRemoteChar is set
-            BLERemoteCharacteristic* tempNotifyChar = pRemoteService->getCharacteristic(GLANCE_CHAR_NOTIFY_UUID);
+            NimBLERemoteCharacteristic* tempNotifyChar = pRemoteService->getCharacteristic(GLANCE_CHAR_NOTIFY_UUID);
             if (tempNotifyChar != nullptr && tempNotifyChar->canNotify()) {
-                tempNotifyChar->registerForNotify(notifyCallbackFC78);
-                
+                tempNotifyChar->subscribe(true, notifyCallbackFC78);
                 xSemaphoreTake(systemMutex, portMAX_DELAY);
                 pNotifyChar = tempNotifyChar;
                 xSemaphoreGive(systemMutex);
-                
-                logMessage("Registered for Notify (fc78) successfully.");
             }
-        } else {
-            logMessage("Error: Glance service not found.");
         }
     }
 
-    // Trigger time sync and settings automatically once notification response is received from clock
+    // Trigger time sync automatically once notification response is received from clock
     xSemaphoreTake(systemMutex, portMAX_DELAY);
     bool currentNeedSync = bleState.needCtsSync;
-    BLERemoteCharacteristic* currentRemoteChar = pRemoteChar;
+    NimBLERemoteCharacteristic* currentRemoteChar = pRemoteChar;
     bool currentAuthReady = bleState.isAuthReady;
     xSemaphoreGive(systemMutex);
 
@@ -435,7 +413,7 @@ void loopBLE() {
     }
 
     // Handle connection request execution
-    if (doConnect) {
+    if (doConnect && localClient != nullptr) {
         xSemaphoreTake(systemMutex, portMAX_DELAY);
         bleState.doConnect = false;
         xSemaphoreGive(systemMutex);
@@ -443,8 +421,13 @@ void loopBLE() {
         vTaskDelay(pdMS_TO_TICKS(50));
 
         // Attempt connection using random address type; if failed, schedule rescan retry
-        // CAUTION: Never change the BLE address type from BLE_ADDR_TYPE_RANDOM.
-        if (!pClient->connect(targetAddr, BLE_ADDR_TYPE_RANDOM)) {
+        // CAUTION: Never change the BLE address type from BLE_ADDR_RANDOM.
+        if (localClient->connect(targetAddr, BLE_ADDR_RANDOM)) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+
+            logMessage("Requesting secure connection / encryption...");
+            localClient->secureConnection();
+        } else {
             logMessage("Connection failed. Rescanning in 5 seconds.");
             xSemaphoreTake(systemMutex, portMAX_DELAY);
             bleState.doScan = true;
@@ -460,8 +443,19 @@ void loopBLE() {
         bleState.doScan = false;
         xSemaphoreGive(systemMutex);
         
-        logMessage("Rescanning...");
-        BLEDevice::getScan()->start(5, scanCompleteCB, false);
+        logMessage("Rescanning (10s)...");
+        NimBLEScan* pBLEScan = NimBLEDevice::getScan();
+        pBLEScan->start(10000, false);
+        
+        xSemaphoreTake(systemMutex, portMAX_DELAY);
+        bool hasAddr = hasTargetAddress;
+        bool isConn = bleState.connected;
+        if (!hasAddr && !isConn) {
+            bleState.doScan = true;
+            bleState.disconnectTime = millis();
+        }
+        xSemaphoreGive(systemMutex);
+
         updateScreenStatus();
     }
 }

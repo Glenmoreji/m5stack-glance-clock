@@ -4,33 +4,57 @@
 #include "./src/ble_manager.h"
 #include "./src/packet_builder.h"
 #include "./src/http_server.h"
+#include "./src/mqtt_manager.h"
 #include "./src/SharedData.h"
 
 // ----------------------------------------------------------------------------
 // Global Variable Definitions
 // ----------------------------------------------------------------------------
-Preferences preferences; // NVS preference storage instance
-String ssid = "";        // Wi-Fi SSID storage
-String password = "";    // Wi-Fi password storage
-const char* apSSID = "M5Stack-Setup"; // Access point name for captive portal
-DNSServer dnsServer;     // DNS server for captive portal redirection
-WebServer server(80);    // HTTP web server instance on port 80
-const char* ntpServer = "ntp.nict.jp"; // NTP time synchronization server address
+Preferences preferences;                            // NVS preference storage instance
+String ssid = "";                                   // Wi-Fi SSID storage
+String password = "";                               // Wi-Fi password storage
+const char* apSSID = "M5Stack-Setup";               // Access point name for captive portal
+DNSServer dnsServer;                                // DNS server for captive portal redirection
+WebServer server(80);                               // HTTP web server instance on port 80
+const char* ntpServer = "ntp.nict.jp";              // NTP time synchronization server address
 
-BLEClient* pClient = nullptr;                     // BLE client instance for connecting to peripherals
-BLERemoteCharacteristic* pRemoteChar = nullptr;   // BLE remote characteristic for writing commands
-BLERemoteCharacteristic* pNotifyChar = nullptr;   // BLE remote characteristic for notifications
-BLEServer* pServer = nullptr;                     // BLE server instance for local hosting
-BLECharacteristic* pCtsCharacteristic = nullptr;  // Current Time Service characteristic
+NimBLEClient* pClient = nullptr;                    // BLE client instance for connecting to peripherals
+NimBLERemoteCharacteristic* pRemoteChar = nullptr;  // BLE remote characteristic for writing commands
+NimBLERemoteCharacteristic* pNotifyChar = nullptr;  // BLE remote characteristic for notifications
+NimBLEServer* pServer = nullptr;                    // BLE server instance for local hosting
+NimBLECharacteristic* pCtsCharacteristic = nullptr; // Current Time Service characteristic
 
-BLEAddress targetServerAddress("00:00:00:00:00:00"); // Target BLE device MAC address holder
-bool hasTargetAddress = false; // Flag indicating if a target BLE address is loaded
-String webPinCode = "";        // PIN code entered via web interface
-bool hasWebPin = false;        // Flag indicating if web PIN has been provided
+NimBLEAddress targetServerAddress("00:00:00:00:00:00", BLE_ADDR_RANDOM); // Target BLE device MAC address holder
+bool hasTargetAddress = false;                      // Flag indicating if a target BLE address is loaded
+String webPinCode = "";                             // PIN code entered via web interface
+bool hasWebPin = false;                             // Flag indicating if web PIN has been provided
 
-SemaphoreHandle_t systemMutex = NULL; // FreeRTOS mutex for protecting shared system state
-BleConnectionState bleState;          // Current BLE connection and scanning state tracker
-bool isWaitingForPin = false;         // Flag indicating if the system is waiting for a PIN entry
+SemaphoreHandle_t systemMutex = NULL;               // FreeRTOS mutex for protecting shared system state
+BleConnectionState bleState;                        // Current BLE connection and scanning state tracker
+bool isWaitingForPin = false;                       // Flag indicating if the system is waiting for a PIN entry
+
+// ----------------------------------------------------------------------------
+// Network Background Task (Pinned to Core 0)
+// ----------------------------------------------------------------------------
+void networkTask(void *pvParameters) {
+    while (true) {
+        // Monitor Wi-Fi connection and attempt reconnect if dropped
+        if (WiFi.status() != WL_CONNECTED) {
+            logMessage("Wi-Fi disconnected. Reconnecting...", "WiFi disconnected. Reconnecting...");
+            updateScreenStatus();
+            WiFi.reconnect();
+            vTaskDelay(pdMS_TO_TICKS(5000));
+        } else {
+            // Handle incoming HTTP client requests, MQTT communication, and check daily timezone synchronization
+            server.handleClient();
+            loopMQTT();
+            checkDailyTimezoneSync();
+        }
+        
+        // Yield CPU control briefly on Core 0
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
 
 // ----------------------------------------------------------------------------
 // System Setup Initialization
@@ -61,7 +85,7 @@ void setup() {
         }
     }
 
-    // 1. Initialize Wi-Fi connection or start Captive Portal
+    // Initialize Wi-Fi connection or start Captive Portal
     initWiFi();
 
     // Set scroll area and draw initial screen header
@@ -71,13 +95,14 @@ void setup() {
     clearLogArea();
     updateScreenStatus();
 
-    // 2. Initialize Timezone (NVS load -> IP fetch update -> NTP sync)
+    // Initialize Timezone (NVS load -> IP fetch update -> NTP sync)
     initTimeSync();
 
-    // 3. Register HTTP server endpoint handlers
+    // Register HTTP server endpoint handlers and MQTT configuration
     setupHttpServer();
+    setupMQTT();
 
-    // 4. Load saved BLE target address from NVS Preferences
+    // Load saved BLE target address from NVS Preferences
     preferences.begin("ble-config", true);
     String savedAddr = preferences.getString("targetAddr", "");
     preferences.end();
@@ -85,7 +110,7 @@ void setup() {
     // Check and apply saved BLE target address if present
     if (savedAddr.length() > 0) {
         xSemaphoreTake(systemMutex, portMAX_DELAY);
-        targetServerAddress = BLEAddress(savedAddr.c_str());
+        targetServerAddress = NimBLEAddress(savedAddr.c_str(), BLE_ADDR_RANDOM);
         hasTargetAddress = true;
         xSemaphoreGive(systemMutex);
         logMessage("Loaded saved BLE address: " + savedAddr);
@@ -96,13 +121,24 @@ void setup() {
         logMessage("No saved BLE address found. Performing initial dynamic discovery.");
     }
 
-    // 5. Initialize BLE client and server stack
+    // Initialize BLE client and server stack
     setupBLE();
     updateScreenStatus();
+
+    // Create and pin network background processing task to Core 0
+    xTaskCreatePinnedToCore(
+        networkTask,   // Task function
+        "NetworkTask", // Task name
+        4096,          // Stack size
+        NULL,          // Parameters
+        1,             // Priority
+        NULL,          // Task handle
+        0              // Core ID (Core 0)
+    );
 }
 
 // ----------------------------------------------------------------------------
-// Main Event Loop Execution
+// Main Event Loop Execution (Pinned to Core 1)
 // ----------------------------------------------------------------------------
 void loop() {
     // Update button states and device input handlers
@@ -149,26 +185,9 @@ void loop() {
         notifyCTSTime();
     }
 
-    // Monitor Wi-Fi connection and attempt reconnect if dropped
-    static unsigned long lastWifiCheck = 0;
-    if (WiFi.status() != WL_CONNECTED) {
-        if (millis() - lastWifiCheck >= 5000) {
-            lastWifiCheck = millis();
-            logMessage("Wi-Fi disconnected. Reconnecting...", "WiFi disconnected. Reconnecting...");
-            updateScreenStatus();
-            WiFi.reconnect();
-        }
-    } else {
-        // Handle incoming HTTP client requests when connected
-        server.handleClient();
-        
-        // Check daily timezone synchronization via IP geolocation
-        checkDailyTimezoneSync();
-    }
-
-    // Execute BLE connection, scanning, and state machine loop
+    // Execute BLE connection, scanning, and state machine loop on Core 1
     loopBLE();
 
-    // Yield CPU control briefly using FreeRTOS task delay
+    // Yield CPU control briefly using FreeRTOS task delay on Core 1
     vTaskDelay(pdMS_TO_TICKS(10));
 }

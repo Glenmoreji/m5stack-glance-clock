@@ -29,31 +29,57 @@ void encodeVarintVector(std::vector<uint8_t>& buffer, uint64_t value) {
 }
 
 // ----------------------------------------------------------------------------
-// Sends a raw command packet to Glance Clock via BLE.
+// Sends a raw command packet to Glance Clock via BLE with safe mutex lock and fallback.
 // ----------------------------------------------------------------------------
 bool sendGlanceCommand(const uint8_t* cmdData, size_t length) {
     // Safely retrieve BLE connection and security status flags under mutex protection
     xSemaphoreTake(systemMutex, portMAX_DELAY);
-    bool connected = bleState.connected;
-    bool authReady = bleState.isAuthReady;
-    BLERemoteCharacteristic* currentRemoteChar = pRemoteChar;
-    xSemaphoreGive(systemMutex);
 
     // Validate that device is connected, authenticated, and remote characteristic is available
-    if (!connected || !authReady || currentRemoteChar == nullptr) {
+    if (!bleState.connected || !bleState.isAuthReady || pRemoteChar == nullptr || pClient == nullptr || !pClient->isConnected()) {
+        xSemaphoreGive(systemMutex);
         logMessage(" -> Send failed: Not connected or Auth/Encryption not ready", " -> Failed: Security not ready");
         return false;
     }
     
     // Verify that the target characteristic supports write operations
-    if (!currentRemoteChar->canWrite()) {
+    if (!pRemoteChar->canWrite() && !pRemoteChar->canWriteNoResponse()) {
+        xSemaphoreGive(systemMutex);
         logMessage(" -> Send failed: Characteristic is not writable", " -> Failed: Cannot write");
         return false;
     }
 
-    // Write command byte array to the remote characteristic with response enabled
-    currentRemoteChar->writeValue((uint8_t*)cmdData, length, true);
-    return true;
+    bool success = false;
+    try {
+        // Attempt writing command byte array with retries to ensure reliable transmission
+        for (int attempt = 1; attempt <= 3; attempt++) {
+            if (pRemoteChar->canWrite() && pRemoteChar->writeValue((uint8_t*)cmdData, length, true)) {
+                success = true;
+                break;
+            }
+            if (pRemoteChar->canWriteNoResponse() && pRemoteChar->writeValue((uint8_t*)cmdData, length, false)) {
+                success = true;
+                break;
+            }
+            xSemaphoreGive(systemMutex);
+            delay(100);
+            xSemaphoreTake(systemMutex, portMAX_DELAY);
+            if (!bleState.connected || pRemoteChar == nullptr) {
+                break;
+            }
+        }
+    } catch (...) {
+        xSemaphoreGive(systemMutex);
+        logMessage(" -> Exception caught during writeValue.", " -> Write Exception");
+        return false;
+    }
+
+    xSemaphoreGive(systemMutex);
+
+    if (!success) {
+        logMessage(" -> Write failed after attempts.", " -> Write failed");
+    }
+    return success;
 }
 
 // ----------------------------------------------------------------------------
@@ -62,12 +88,14 @@ bool sendGlanceCommand(const uint8_t* cmdData, size_t length) {
 bool createCtsTimeData(uint8_t* currentTime) {
     // Ensure NTP time synchronization has been completed prior to generating CTS data
     if (!sharedData.isNtpSynced()) {
+        logMessage(" -> CTS Data Failed: NTP not synced.");
         return false;
     }
 
     struct tm timeinfo;
     // Retrieve local time structure from system time (ensuring correct TZ environment is set)
     if (!getLocalTime(&timeinfo)) {
+        logMessage(" -> CTS Data Failed: getLocalTime failed.");
         return false;
     }
 
@@ -83,6 +111,13 @@ bool createCtsTimeData(uint8_t* currentTime) {
     currentTime[7] = (timeinfo.tm_wday == 0) ? 7 : timeinfo.tm_wday;
     currentTime[8] = 0;
     currentTime[9] = 1;
+
+    // Output the generated 10-byte CTS payload in HEX format for verification
+    char hexLog[64];
+    snprintf(hexLog, sizeof(hexLog), " -> CTS 10-byte HEX: %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X",
+             currentTime[0], currentTime[1], currentTime[2], currentTime[3], currentTime[4],
+             currentTime[5], currentTime[6], currentTime[7], currentTime[8], currentTime[9]);
+    logMessage(String(hexLog));
 
     // Log the generated time formatted for CTS transmission
     char timeStr[64];
@@ -126,9 +161,11 @@ void sendSettingsCommand() {
 }
 
 // ----------------------------------------------------------------------------
-// Synchronizes current time via CTS and updates display wake state.
+// Synchronizes current time and settings directly via Data Characteristic.
 // ----------------------------------------------------------------------------
 void notifyCTSTime() {
+    logMessage("CTS sync start");
+
     // Check NTP synchronization status before sending time sync
     if (!sharedData.isNtpSynced()) {
         logMessage(" -> Failed: NTP synchronization not completed yet.", " -> NTP Sync Required");
@@ -143,15 +180,25 @@ void notifyCTSTime() {
     // If it is initial pairing, apply default settings and reset the pairing flag
     if (firstPairing) {
         logMessage("Initial pairing detected: Applying default settings.", "Initial Pairing");
+        
+        // Execute Alarm Clear once on initial pairing / post-update
+        uint8_t clearAlarmCmd[] = {CMD_ALARM_CLEAR, 0x00, 0x00, 0x00};
+        if (sendGlanceCommand(clearAlarmCmd, sizeof(clearAlarmCmd))) {
+            logMessage(" -> Initial Alarm Clear sent successfully.");
+        } else {
+            logMessage(" -> Failed to send Initial Alarm Clear.");
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+        
         xSemaphoreTake(systemMutex, portMAX_DELAY);
         bleState.isFirstPairing = false;
         xSemaphoreGive(systemMutex);
     }
+    
     sendSettingsCommand();
-
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    // If local CTS characteristic is registered, update current time value and notify connected clock
+    // Update local CTS characteristic value and notify connected clock via NimBLE
     if (pCtsCharacteristic != nullptr) {
         uint8_t currentTime[10];
         if (!createCtsTimeData(currentTime)) {
@@ -159,9 +206,18 @@ void notifyCTSTime() {
             return;
         }
 
+        logMessage("CTS setValue()");
         pCtsCharacteristic->setValue(currentTime, 10);
-        pCtsCharacteristic->notify();
+        logMessage("setValue done");
+
+        logMessage("CTS notify() executing...");
+        bool notified = pCtsCharacteristic->notify();
+        logMessage(String("CTS notify result=") + (notified ? "true" : "false"));
+        logMessage("notify done");
+
         logMessage(" -> Display turned on & NTP time sync sent.", " -> Display On & Time Synced");
+    } else {
+        logMessage(" -> Failed: pCtsCharacteristic is nullptr.");
     }
 }
 
@@ -170,7 +226,8 @@ void notifyCTSTime() {
 // ----------------------------------------------------------------------------
 std::vector<uint8_t> buildTextPayloadWithIcon(int mod, const String& message, int leadingIcon, int trailingIcon) {
     std::vector<uint8_t> contentBuffer;
-    contentBuffer.reserve(message.length() + 8);
+    size_t msgLen = message.length();
+    contentBuffer.reserve(msgLen + 8);
     
     // Append leading icon byte with tag if specified
     if (leadingIcon > 0) {
@@ -179,9 +236,9 @@ std::vector<uint8_t> buildTextPayloadWithIcon(int mod, const String& message, in
     }
     
     // Append text message bytes if present
-    if (message.length() > 0) {
+    if (msgLen > 0) {
         const uint8_t* msgBytes = (const uint8_t*)message.c_str();
-        contentBuffer.insert(contentBuffer.end(), msgBytes, msgBytes + message.length());
+        contentBuffer.insert(contentBuffer.end(), msgBytes, msgBytes + msgLen);
     }
 
     // Append trailing icon byte with tag if specified
@@ -235,11 +292,12 @@ void sendCustomNoticeCommand(const String& message, int anim, int sound, int col
 // ----------------------------------------------------------------------------
 // Builds a ring LED chart display packet for the forecast scene.
 // ----------------------------------------------------------------------------
-std::vector<uint8_t> buildRingPacket(std::vector<int16_t> ringValues, uint8_t slot, uint32_t maxColor, uint32_t minColor, int16_t maxValue, int16_t minValue, const String& message) {
+std::vector<uint8_t> buildRingPacket(const std::vector<int16_t>& ringValues, uint8_t slot, uint32_t maxColor, uint32_t minColor, int16_t maxValue, int16_t minValue, const String& message) {
     // Initialize packet vector with forecast scene prefix and slot identifier
     std::vector<uint8_t> packet(Prefix::FORECAST_SCENE, Prefix::FORECAST_SCENE + sizeof(Prefix::FORECAST_SCENE));
     packet.push_back(slot);
-    packet.reserve(64 + message.length());
+    size_t msgLen = message.length();
+    packet.reserve(64 + msgLen);
 
     time_t now;
     time(&now);
@@ -256,12 +314,12 @@ std::vector<uint8_t> buildRingPacket(std::vector<int16_t> ringValues, uint8_t sl
     encodeVarintVector(packet, minColor);
 
     packet.insert(packet.end(), { PB_TAG(6, PbWire::VARINT) });
-    encodeVarintVector(packet, maxValue);
+    encodeVarintVector(packet, static_cast<uint64_t>(static_cast<int32_t>(maxValue)));
     
     packet.insert(packet.end(), { PB_TAG(7, PbWire::VARINT) });
-    encodeVarintVector(packet, minValue);
+    encodeVarintVector(packet, static_cast<uint64_t>(static_cast<int32_t>(minValue)));
 
-    // Build 24-element ring chart values byte buffer (2 bytes per value)
+    // Build 24-element ring chart values byte buffer (2 bytes per value) without vector copy
     std::vector<uint8_t> ringDataBytes;
     ringDataBytes.reserve(48);
     
@@ -277,9 +335,9 @@ std::vector<uint8_t> buildRingPacket(std::vector<int16_t> ringValues, uint8_t sl
 
     // Append display label message string
     packet.insert(packet.end(), { PB_TAG(9, PbWire::BYTES) });
-    encodeVarintVector(packet, message.length());
+    encodeVarintVector(packet, static_cast<uint64_t>(msgLen));
     const uint8_t* msgBytes = (const uint8_t*)message.c_str();
-    packet.insert(packet.end(), msgBytes, msgBytes + message.length());
+    packet.insert(packet.end(), msgBytes, msgBytes + msgLen);
     
     return packet;
 }
@@ -290,13 +348,15 @@ std::vector<uint8_t> buildRingPacket(std::vector<int16_t> ringValues, uint8_t sl
 std::vector<uint8_t> buildTimerPacket(int duration, const String& label, const String& message) {
     // Initialize packet vector with timer prefix bytes
     std::vector<uint8_t> packet(Prefix::TIMER, Prefix::TIMER + sizeof(Prefix::TIMER));
-    packet.reserve(64 + label.length() + message.length());
+    size_t labelLen = label.length();
+    size_t msgLen = message.length();
+    packet.reserve(64 + labelLen + msgLen);
 
     std::vector<uint8_t> intervalParts;
-    intervalParts.reserve(32 + label.length());
+    intervalParts.reserve(32 + labelLen);
 
     // If a label is provided, build and insert text payload into interval parts
-    if (label.length() > 0) {
+    if (labelLen > 0) {
         int mod = 0x01;
         int icon = 0x00;
         std::vector<uint8_t> textData = buildTextPayloadWithIcon(mod, label, icon);
@@ -315,7 +375,7 @@ std::vector<uint8_t> buildTimerPacket(int duration, const String& label, const S
     packet.insert(packet.end(), intervalParts.begin(), intervalParts.end());
 
     // If an expiration message is provided, build and insert final text payload
-    if (message.length() > 0) {
+    if (msgLen > 0) {
         int mod = 0x01;
         int icon = 0x00;
         std::vector<uint8_t> finalTextData = buildTextPayloadWithIcon(mod, message, icon);
@@ -334,10 +394,11 @@ std::vector<uint8_t> buildTimerPacket(int duration, const String& label, const S
 std::vector<uint8_t> buildAlarmPacket(uint8_t days, uint8_t hour, uint8_t minutes, uint8_t sound, const String& message) {
     // Initialize packet vector with alarm prefix bytes
     std::vector<uint8_t> packet(Prefix::ALARM, Prefix::ALARM + sizeof(Prefix::ALARM));
-    packet.reserve(64 + message.length());
+    size_t msgLen = message.length();
+    packet.reserve(64 + msgLen);
 
     std::vector<uint8_t> alarmData;
-    alarmData.reserve(32 + message.length());
+    alarmData.reserve(32 + msgLen);
 
     // Append alarm activation state and active days bitmask
     alarmData.insert(alarmData.end(), {PB_TAG(2, PbWire::VARINT), 0x01});
@@ -357,7 +418,7 @@ std::vector<uint8_t> buildAlarmPacket(uint8_t days, uint8_t hour, uint8_t minute
     alarmData.insert(alarmData.end(), {PB_TAG(5, PbWire::VARINT), sound});
 
     // If an alarm message is provided, append text payload
-    if (message.length() > 0) {
+    if (msgLen > 0) {
         int mod = 0x01;
         int icon = 0x82;
         std::vector<uint8_t> textPayload = buildTextPayloadWithIcon(mod, message, icon);

@@ -149,10 +149,11 @@ void initWiFi() {
     password = preferences.getString("pass", "");
     preferences.end();
 
-    // If no SSID is configured, launch captive portal mode
-    if (ssid == "") {
+    // If no SSID is configured, launch captive portal mode (executed only once)
+    if (ssid.length() == 0) {
         logMessage("Wi-Fi configuration not found. Starting Captive Portal.");
         startCaptivePortal();
+        return;
     }
 
     logMessage("Connecting to WiFi: " + ssid);
@@ -166,16 +167,20 @@ void initWiFi() {
         if (retries > 20) {
             logMessage("\nWi-Fi connection failed. Switching to Captive Portal.");
             startCaptivePortal(); // Fallback to portal if connection times out
+            break;
         }
     }
-    logMessage("\nWiFi connected.");
     
-    // Initialize mDNS service for local hostname resolution
-    if (MDNS.begin("glance-clock")) {
-        logMessage("mDNS responder started!");
-        logMessage("You can access via: http://glance-clock.local");
-    } else {
-        logMessage("Error setting up MDNS responder!");
+    if (WiFi.status() == WL_CONNECTED) {
+        logMessage("\nWiFi connected.");
+        
+        // Initialize mDNS service for local hostname resolution
+        if (MDNS.begin("glance-clock")) {
+            logMessage("mDNS responder started!");
+            logMessage("You can access via: http://glance-clock.local");
+        } else {
+            logMessage("Error setting up MDNS responder!");
+        }
     }
 }
 

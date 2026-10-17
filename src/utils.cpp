@@ -56,7 +56,7 @@ void updateScreenStatus() {
     bool connected = bleState.connected;
     bool doScan = bleState.doScan;
     xSemaphoreGive(systemMutex);
-
+    
     // Begin batch drawing operation to redraw the header status area
     M5.Display.startWrite();
     M5.Display.fillRect(0, 0, M5.Display.width(), 40, BLACK); // Clear header background

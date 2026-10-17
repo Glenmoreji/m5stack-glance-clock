@@ -21,6 +21,7 @@ Here is a [video](https://youtu.be/5_j0KFj5OKg) demonstrating control via a web 
 ## Features
 - **ESP32 Bridge**: Acts as a relay using M5Stack [Basic](https://docs.m5stack.com/en/core/basic) or [AtomS3 Lite](https://docs.m5stack.com/en/core/AtomS3%20Lite) to send data to the Glance Clock via BLE.
 - **Web API**: Can be operated through HTTP requests from browsers, home automation tools, or API clients.
+- **MQTT Integration**: Supports MQTT client capabilities (e.g., via PubSubClient) to seamlessly receive control commands, notices, and quick actions from platforms like Home Assistant.
 - **Captive Portal Support**: Easily configure SSID and passwords from a smartphone or PC during initial startup or Wi-Fi configuration.
 - **Automated Time Synchronization**: Timezone settings, including daylight saving time, are automatically configured via IP geolocation.
 
