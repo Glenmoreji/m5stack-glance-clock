@@ -2,6 +2,7 @@
 #include "utils.h"
 #include "packet_builder.h"
 #include "SharedData.h"
+#include "mqtt_manager.h"
 
 // ----------------------------------------------------------------------------
 // Embedded HTML Control Panel Page (Stored in Flash memory / PROGMEM)
@@ -349,6 +350,22 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
         </div>
     </div>
 
+    <!-- 6. MQTT Server Settings -->
+    <div class="section">
+        <h2>6. MQTT Server Settings</h2>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="mqttServerIp">MQTT Broker IP / Host</label>
+                <input type="text" id="mqttServerIp" value="" placeholder="192.168.x.x">
+            </div>
+            <div class="form-group" style="max-width: 120px;">
+                <label for="mqttPortNum">Port</label>
+                <input type="number" id="mqttPortNum" value="1883">
+            </div>
+        </div>
+        <button style="margin-top: 15px;" onclick="sendMqttConfig()">Save & Connect MQTT</button>
+    </div>
+
     <!-- Console Output -->
     <div class="section">
         <h2>Console Output</h2>
@@ -368,6 +385,20 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 
             const url = `/pin?code=${pin}`;
             log(`Sending PIN Request: ${url}`);
+
+            fetch(url, { method: 'GET' })
+                .then(res => res.text())
+                .then(data => log(`Success: ${data || 'OK'}`))
+                .catch(err => log(`Error: ${err.message}`));
+        }
+
+        // Save MQTT server configuration function (/mqtt endpoint)
+        function sendMqttConfig() {
+            const server = document.getElementById('mqttServerIp').value;
+            const port = document.getElementById('mqttPortNum').value;
+
+            const url = `/mqtt?server=${server}&port=${port}`;
+            log(`Sending MQTT Config Request: ${url}`);
 
             fetch(url, { method: 'GET' })
                 .then(res => res.text())
@@ -458,9 +489,7 @@ const char HTML_INDEX[] PROGMEM = R"rawliteral(
 // Sends a standard HTTP response with CORS headers and specified content type.
 // ----------------------------------------------------------------------------
 void sendResponse(int status, const String& message, const String& contentType) {
-    // Add CORS header to allow cross-origin requests from any client
     server.sendHeader("Access-Control-Allow-Origin", "*");
-    // Send HTTP status, content type, and response body message
     server.send(status, contentType, message);
 }
 
@@ -468,16 +497,9 @@ void sendResponse(int status, const String& message, const String& contentType) 
 // Handle Root URL HTTP GET Requests
 // ----------------------------------------------------------------------------
 void handleRoot() {
-    // Get HTML_INDEX from flash memory as a String
     String html = FPSTR(HTML_INDEX);
-    
-    // Get the current IP address (or fallback to hostname if not connected)
     String currentIp = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "glance-clock.local";
-    
-    // Replace the placeholder in the HTML with the actual IP address
     html.replace("%IP_ADDRESS%", currentIp);
-    
-    // Send the generated HTML response to the client
     server.send(200, "text/html", html);
 }
 
@@ -485,38 +507,53 @@ void handleRoot() {
 // Initializes and registers all HTTP REST API endpoints and web server handlers.
 // ----------------------------------------------------------------------------
 void setupHttpServer() {
-    // Root endpoint for serving web control panel interface
     server.on("/", HTTP_GET, handleRoot);
     
+    // MQTT configuration reception: http://glance-clock.local/mqtt?server=192.168.1.100&port=1883
+    server.on("/mqtt", HTTP_GET, []() {
+        if (server.hasArg("server")) {
+            String mqttServerAddr = server.arg("server");
+            int mqttPortNum = server.hasArg("port") ? server.arg("port").toInt() : 1883;
+
+            // Save MQTT server configuration to NVS preferences
+            preferences.begin("mqtt-config", false);
+            preferences.putString("server", mqttServerAddr);
+            preferences.putInt("port", mqttPortNum);
+            preferences.end();
+
+            // Re-initialize MQTT configuration immediately
+            setupMQTT();
+
+            sendResponse(200, "OK: MQTT server saved -> " + mqttServerAddr);
+            logMessage("MQTT Saved: " + mqttServerAddr + ":" + String(mqttPortNum), "MQTT Saved");
+        } else {
+            handleErrorResponse(400, "Error: Missing server parameter");
+        }
+    });
+
     // PIN code reception: http://glance-clock.local/pin?code=123456
     server.on("/pin", HTTP_GET, []() {
-        // Check if the 'code' query parameter is provided in the HTTP request
         if (server.hasArg("code")) {
             String pinCode = server.arg("code");
             
-            // Safely update shared PIN state variables protected by systemMutex
             xSemaphoreTake(systemMutex, portMAX_DELAY);
             webPinCode = pinCode;
             hasWebPin = true;
             xSemaphoreGive(systemMutex);
             
-            // Send success response and log the received PIN code
             sendResponse(200, "OK: PIN received -> " + pinCode);
             logMessage("PIN Recv: " + pinCode, "PIN Recv: " + pinCode);
         } else {
-            // Return 400 Bad Request if the required 'code' parameter is missing
             handleErrorResponse(400, "Error: Missing code parameter");
         }
     });
 
     // Time sync: http://glance-clock.local/sync
     server.on("/sync", HTTP_GET, []() {
-        // Verify if NTP time synchronization has been completed before syncing to device
         if (!sharedData.isNtpSynced()) {
             handleErrorResponse(500, "Error: NTP sync not completed yet");
             return;
         }
-        // Notify Current Time Service (CTS) via BLE and respond with success
         notifyCTSTime();
         
         uint8_t refreshCmd[] = {CMD_UPDATE_REFRESH, 0x00, 0x00, 0x00};
@@ -528,9 +565,7 @@ void setupHttpServer() {
 
     // Update device settings: http://glance-clock.local/settings?pointsEnabled=1
     server.on("/settings", HTTP_GET, []() {
-        // Retrieve current device settings structure from shared data
         DeviceSettings currentSettings = sharedData.getSettings();
-        // Update individual setting fields if corresponding query arguments exist in the request
         if (server.hasArg("nightMode")) currentSettings.nightMode = (server.arg("nightMode") == "1");
         if (server.hasArg("permanentDND")) currentSettings.permanentDND = (server.arg("permanentDND") == "1");
         if (server.hasArg("permanentMute")) currentSettings.permanentMute = (server.arg("permanentMute") == "1");
@@ -540,7 +575,6 @@ void setupHttpServer() {
         if (server.hasArg("timeModeEnable")) currentSettings.timeModeEnable = (server.arg("timeModeEnable") == "1");
         if (server.hasArg("timeFormat12")) currentSettings.timeFormat12 = (server.arg("timeFormat12") == "1");
 
-        // Save updated settings, transmit packet to device, and respond
         sharedData.setSettings(currentSettings);
         sendSettingsCommand();
         sendResponse(200, "OK: Settings applied");
@@ -551,12 +585,10 @@ void setupHttpServer() {
 
     // Send notification: http://glance-clock.local/notice?text=Hello&icon=133
     server.on("/notice", HTTP_GET, []() {
-        // Ensure NTP is synced to avoid timestamp issues in notifications
         if (!sharedData.isNtpSynced()) {
             handleErrorResponse(500, "Error: NTP sync not completed yet");
             return;
         }
-        // Extract notice parameters with default fallback values if arguments are omitted
         String msg = server.hasArg("text") ? server.arg("text") : " ";
         int anim = server.hasArg("anim") ? server.arg("anim").toInt() : 1;
         int sound = server.hasArg("sound") ? server.arg("sound").toInt() : 5;
@@ -564,31 +596,26 @@ void setupHttpServer() {
         int mod = server.hasArg("mod") ? server.arg("mod").toInt() : 1;
         int icon = server.hasArg("icon") ? server.arg("icon").toInt() : 133;
 
-        // Build and send the custom notification command packet via BLE
         sendCustomNoticeCommand(msg, anim, sound, color, mod, icon);
         sendResponse(200, "OK: Notice sent -> " + msg);
     });
 
     // Register calendar event: http://glance-clock.local/calendar?starth=21&startmin=0&inform=12&dur=60&title=test
     server.on("/calendar", HTTP_GET, []() {
-        // Verify NTP synchronization status before scheduling calendar events
         if (!sharedData.isNtpSynced()) {
             handleErrorResponse(500, "Error: NTP sync not completed yet", "Calendar Error: NTP Not Synced");
             return;
         }
-        // Initialize protobuf vector with the appointment scene prefix bytes
         std::vector<uint8_t> cmd(Prefix::APPOINTMENTS_SCENE, Prefix::APPOINTMENTS_SCENE + sizeof(Prefix::APPOINTMENTS_SCENE));
         cmd.push_back(8);
         cmd.push_back(1);
         
         struct tm timeinfo;
-        // Obtain current local time structure
         if (!getLocalTime(&timeinfo)) {
             handleErrorResponse(500, "Error: Time not synced", "Time Not Synced");
             return;
         }
 
-        // Parse query parameters for event timing, duration, notification offset, and title
         int startHour = server.hasArg("starth") ? server.arg("starth").toInt() : 21;
         int startMin = server.hasArg("startmin") ? server.arg("startmin").toInt() : 0;
         int informMin = server.hasArg("inform") ? server.arg("inform").toInt() : 12;
@@ -600,26 +627,22 @@ void setupHttpServer() {
 
         cmd.reserve(128);
         
-        // Append current epoch timestamp as a protobuf varint field
         cmd.insert(cmd.end(), { PB_TAG(1, PbWire::VARINT) });
         encodeVarintVector(cmd, (uint64_t)now);
 
         cmd.insert(cmd.end(), {PB_TAG(2, PbWire::BYTES), 0x08});
 
-        // Clamp and normalize start hour and minute values into acceptable ranges
         if (startMin >= 60) startMin = 59;
         if (startMin < 0) startMin = 0;
         if (startHour < 2) startHour += 24;
         if (startHour > 25) startHour = 25;
         int targetMinutesToday = (startHour - 2) * 60 + startMin;
         
-        // Calculate bit-shifted time encoding representation for the clock device
         uint16_t tmpVal = (((targetMinutesToday << 5) & 0xFFE0) | 0x001C); 
         uint16_t timeVal = (((tmpVal << 3) & 0xFFF8) | ((tmpVal >> 13) & 0x0007));
         
         cmd.insert(cmd.end(), { (uint8_t)(timeVal & 0xFF), (uint8_t)((timeVal >> 8) & 0xFF) });
 
-        // Calculate and pack duration and notification timing parameters
         if (durationMin < 30) durationMin = 30;
         tmpVal = (((informMin << 6) & 0xFFC0) | ((durationMin/30 - 1) & 0x3F));
         uint16_t durVal = (((tmpVal << 8) & 0xFF00) | ((tmpVal >> 8) & 0x00FF));
@@ -627,7 +650,6 @@ void setupHttpServer() {
         cmd.insert(cmd.end(), { (uint8_t)(durVal & 0xFF), (uint8_t)((durVal >> 8) & 0xFF) });
         cmd.insert(cmd.end(), { 255, 255, 0, 12 });
 
-        // Construct internal nested text payload containing the event title string
         std::vector<uint8_t> textData;
         textData.reserve(title.length() + 4);
         textData.insert(textData.end(), {PB_TAG(1, PbWire::VARINT), 0x01});
@@ -643,7 +665,6 @@ void setupHttpServer() {
         cmd.insert(cmd.end(), {PB_TAG(6, PbWire::VARINT), 0x01});
         cmd.insert(cmd.end(), {PB_TAG(7, PbWire::VARINT), (uint8_t)Sound::Radar});
 
-        // Transmit the fully constructed calendar command packet via BLE and trigger refresh commands
         if (sendGlanceCommand(cmd.data(), cmd.size())) {
             uint8_t refreshCmd[] = {CMD_UPDATE_REFRESH, 0x00, 0x00, 0x00};
             sendGlanceCommand(refreshCmd, sizeof(refreshCmd));
@@ -661,12 +682,10 @@ void setupHttpServer() {
     });
 
     server.on("/calendar_clr", HTTP_GET, []() {
-        // Ensure NTP time is synchronized before clearing calendar entries
         if (!sharedData.isNtpSynced()) {
             handleErrorResponse(500, "Error: NTP sync not completed yet");
             return;
         }
-        // Build clear appointment packet using the appointment scene prefix
         std::vector<uint8_t> packet(Prefix::APPOINTMENTS_SCENE, Prefix::APPOINTMENTS_SCENE + sizeof(Prefix::APPOINTMENTS_SCENE));
         packet.push_back(0);
         packet.push_back(1);
@@ -682,7 +701,6 @@ void setupHttpServer() {
         const uint8_t clearPayload[] = {18, 0, 48, 0, 56, 5};
         packet.insert(packet.end(), clearPayload, clearPayload + sizeof(clearPayload));
 
-        // Send the clear command packet via BLE and respond to the HTTP client
         if (sendGlanceCommand(packet.data(), packet.size())) {
             sendResponse(200, "OK: Calendar cleared");
             logMessage("Calendar Clear: Success");
@@ -693,7 +711,6 @@ void setupHttpServer() {
     
     // Ring LED display: http://glance-clock.local/ring?values=0,10,20,30,40,50,60,70,80,90,100,110,120,130,140,150,160,170,180,190,200,210,220,230&maxValue=230&minValue=0&message=Test
     server.on("/ring", HTTP_GET, []() {
-        // Parse ring endpoint query parameters for slot, colors, value bounds, and display message
         uint8_t slot      = server.hasArg("slot") ? server.arg("slot").toInt() : 1;
         uint32_t maxColor = server.hasArg("maxColor") ? strtoul(server.arg("maxColor").c_str(), NULL, 16) : 0xFF0000;
         uint32_t minColor = server.hasArg("minColor") ? strtoul(server.arg("minColor").c_str(), NULL, 16) : 0x0000FF;
@@ -701,7 +718,6 @@ void setupHttpServer() {
         int16_t minValue  = server.hasArg("minValue") ? server.arg("minValue").toInt() : -30;
         String message    = server.hasArg("message") ? server.arg("message") : "\xC2\x8F\x08\xC2\xB0";
 
-        // Retrieve comma-separated values string or fall back to default 24-element array
         String vStr = server.hasArg("values") 
             ? server.arg("values") 
             : "25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25,25";
@@ -709,7 +725,6 @@ void setupHttpServer() {
         std::vector<int16_t> ringValues;
         ringValues.reserve(24);
 
-        // Split the comma-separated values string and convert each item into the vector
         int start = 0;
         int commaIdx = vStr.indexOf(',');
         while (commaIdx != -1) {
@@ -721,10 +736,8 @@ void setupHttpServer() {
             ringValues.push_back(vStr.substring(start).toInt());
         }
 
-        // Build the ring LED packet utilizing helper builder functions
         std::vector<uint8_t> packet = buildRingPacket(ringValues, slot, maxColor, minColor, maxValue, minValue, message);
         
-        // Transmit packet via BLE, send update/refresh commands, and respond to HTTP client
         if (sendGlanceCommand(packet.data(), packet.size())) {
             uint8_t refreshCmd[] = {CMD_UPDATE_REFRESH, 0x00, 0x00, 0x00};
             sendGlanceCommand(refreshCmd, sizeof(refreshCmd));
@@ -742,15 +755,12 @@ void setupHttpServer() {
     
     // Timer setup: http://glance-clock.local/timer?duration=60
     server.on("/timer", HTTP_GET, []() {
-        // Parse timer duration, label, and expiration message parameters
         int duration    = server.hasArg("duration") ? server.arg("duration").toInt() : 60;
         String label    = server.hasArg("label") ? server.arg("label" ) : "Timer";
         String message    = server.hasArg("message") ? server.arg("message") : "Time's up";
     
-        // Construct timer configuration packet
         std::vector<uint8_t> packet = buildTimerPacket(duration, label, message);
 
-        // Transmit packet via BLE and return JSON response on success
         if (sendGlanceCommand(packet.data(), packet.size())) {
             vTaskDelay(pdMS_TO_TICKS(50));
 
@@ -763,17 +773,14 @@ void setupHttpServer() {
 
     // Alarm setup: http://glance-clock.local/alarm?alarmHour=22&alarmMin=37&alarmDays=127&alarmSound=1&alarmText=ALARM
     server.on("/alarm", HTTP_GET, []() {
-        // Parse alarm configuration parameters (days mask, hour, minutes, sound ID, text message)
         int days    = server.hasArg("alarmDays") ? server.arg("alarmDays").toInt() : 127; 
         int hour    = server.hasArg("alarmHour") ? server.arg("alarmHour").toInt() : 22;
         int minutes = server.hasArg("alarmMin") ? server.arg("alarmMin").toInt() : 0;
         int sound   = server.hasArg("alarmSound") ? server.arg("alarmSound").toInt() : 1; 
         String message = server.hasArg("alarmText") ? server.arg("alarmText") : "ALARM";
 
-        // Build alarm packet payload
         std::vector<uint8_t> packet = buildAlarmPacket(days, hour, minutes, sound, message);
 
-        // Transmit via BLE, trigger display refresh, and respond to HTTP client
         if (sendGlanceCommand(packet.data(), packet.size())) {
             uint8_t refreshCmd[] = {CMD_UPDATE_REFRESH, 0x00, 0x00, 0x00};
             sendGlanceCommand(refreshCmd, sizeof(refreshCmd));
@@ -791,7 +798,6 @@ void setupHttpServer() {
 
     // Raw byte array direct send endpoint: http://glance-clock.local/array?data=[]
     server.on("/array", HTTP_GET, []() {
-        // Ensure the 'data' query argument is present in the request
         if (!server.hasArg("data")) {
             handleErrorResponse(400, "Error: Missing data argument");
             return;
@@ -800,7 +806,6 @@ void setupHttpServer() {
         String rawData = server.arg("data");
         String cleanHex = "";
 
-        // Filter and retain only valid hexadecimal characters from the raw string input
         for (size_t i = 0; i < rawData.length(); i++) {
             char c = rawData.charAt(i);
             if (isxdigit(c)) {
@@ -808,12 +813,10 @@ void setupHttpServer() {
             }
         }
 
-        // Ensure hex string length is even by trimming trailing character if necessary
         if (cleanHex.length() % 2 != 0) {
             cleanHex = cleanHex.substring(0, cleanHex.length() - 1);
         }
 
-        // Convert cleaned hex string into a byte vector
         std::vector<uint8_t> cmd;
         cmd.reserve(cleanHex.length() / 2);
         
@@ -826,7 +829,6 @@ void setupHttpServer() {
         clearLogArea();
         M5.Display.printf("Array: %d bytes\n", cmd.size());
 
-        // Send custom byte array via BLE, execute refresh/scene commands, and respond
         if (sendGlanceCommand(cmd.data(), cmd.size())) {
             uint8_t refreshCmd[] = {CMD_UPDATE_REFRESH, 0x00, 0x00, 0x00};
             sendGlanceCommand(refreshCmd, sizeof(refreshCmd));
@@ -843,7 +845,6 @@ void setupHttpServer() {
 
     // Unified generic quick command endpoint: http://glance-clock.local/quick?byte=31
     server.on("/quick", HTTP_GET, []() {
-        // Validate presence of the 'byte' parameter
         if (!server.hasArg("byte")) {
             handleErrorResponse(400, "Error: Missing byte parameter");
             return;
@@ -854,7 +855,6 @@ void setupHttpServer() {
 
         String label = "";
 
-        // Map single-byte command constants to descriptive human-readable labels
         switch (cmdByte) {
             case CMD_TIMER_STOP:             label = "Timer Stop"; break;
             case CMD_ALARM_STOP:             label = "Alarm Stop"; break;
@@ -876,10 +876,8 @@ void setupHttpServer() {
             default:                         label = "Unknown (0x" + String(cmdByte, HEX) + ")"; break;
         }
 
-        // Construct 4-byte standard command array with trailing zero padding
         uint8_t cmd[] = {cmdByte, 0x00, 0x00, 0x00};
         
-        // Transmit command via BLE and send HTTP response
         if (sendGlanceCommand(cmd, sizeof(cmd))) {
             sendResponse(200, "OK: " + label);
             M5.Display.printf("Quick: %s\n", label.c_str());
@@ -888,7 +886,6 @@ void setupHttpServer() {
         }
     });
 
-    // Start the WebServer instance and log initialization success
     server.begin();
     logMessage("HTTP server started.");
 }
