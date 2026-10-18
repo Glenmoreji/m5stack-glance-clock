@@ -29,52 +29,64 @@ void encodeVarintVector(std::vector<uint8_t>& buffer, uint64_t value) {
 }
 
 // ----------------------------------------------------------------------------
-// Sends a raw command packet to Glance Clock via BLE with safe mutex lock and fallback.
+// Sends a raw command packet to Glance Clock via BLE without holding mutex during write to prevent deadlock.
 // ----------------------------------------------------------------------------
 bool sendGlanceCommand(const uint8_t* cmdData, size_t length) {
-    // Safely retrieve BLE connection and security status flags under mutex protection
+    // Safely retrieve BLE connection and security status flags, and cache pointers under mutex protection
     xSemaphoreTake(systemMutex, portMAX_DELAY);
 
+    bool isConnected = bleState.connected;
+    bool isAuthReady = bleState.isAuthReady;
+    NimBLERemoteCharacteristic* remoteChar = pRemoteChar;
+    NimBLEClient* client = pClient;
+
+    xSemaphoreGive(systemMutex);
+
     // Validate that device is connected, authenticated, and remote characteristic is available
-    if (!bleState.connected || !bleState.isAuthReady || pRemoteChar == nullptr || pClient == nullptr || !pClient->isConnected()) {
-        xSemaphoreGive(systemMutex);
+    if (!isConnected || !isAuthReady || remoteChar == nullptr || client == nullptr || !client->isConnected()) {
         logMessage(" -> Send failed: Not connected or Auth/Encryption not ready", " -> Failed: Security not ready");
         return false;
     }
     
     // Verify that the target characteristic supports write operations
-    if (!pRemoteChar->canWrite() && !pRemoteChar->canWriteNoResponse()) {
-        xSemaphoreGive(systemMutex);
+    if (!remoteChar->canWrite() && !remoteChar->canWriteNoResponse()) {
         logMessage(" -> Send failed: Characteristic is not writable", " -> Failed: Cannot write");
         return false;
     }
 
     bool success = false;
     try {
-        // Attempt writing command byte array with retries to ensure reliable transmission
+        // Attempt writing command byte array with retries without holding systemMutex to avoid deadlock with BLE callbacks
         for (int attempt = 1; attempt <= 3; attempt++) {
-            if (pRemoteChar->canWrite() && pRemoteChar->writeValue((uint8_t*)cmdData, length, true)) {
-                success = true;
+            // Re-verify client connection before each attempt
+            if (client == nullptr || !client->isConnected()) {
                 break;
             }
-            if (pRemoteChar->canWriteNoResponse() && pRemoteChar->writeValue((uint8_t*)cmdData, length, false)) {
-                success = true;
-                break;
-            }
-            xSemaphoreGive(systemMutex);
-            delay(100);
+
             xSemaphoreTake(systemMutex, portMAX_DELAY);
-            if (!bleState.connected || pRemoteChar == nullptr) {
+            NimBLERemoteCharacteristic* currentRemoteChar = pRemoteChar;
+            xSemaphoreGive(systemMutex);
+
+            if (currentRemoteChar == nullptr) {
                 break;
             }
+
+            // Prioritize write without response if available for faster delivery, fallback to write with response
+            if (currentRemoteChar->canWriteNoResponse() && currentRemoteChar->writeValue((uint8_t*)cmdData, length, false)) {
+                success = true;
+                break;
+            }
+            if (currentRemoteChar->canWrite() && currentRemoteChar->writeValue((uint8_t*)cmdData, length, true)) {
+                success = true;
+                break;
+            }
+
+            delay(100);
         }
     } catch (...) {
-        xSemaphoreGive(systemMutex);
         logMessage(" -> Exception caught during writeValue.", " -> Write Exception");
         return false;
     }
-
-    xSemaphoreGive(systemMutex);
 
     if (!success) {
         logMessage(" -> Write failed after attempts.", " -> Write failed");
@@ -198,7 +210,7 @@ void notifyCTSTime() {
     sendSettingsCommand();
     vTaskDelay(pdMS_TO_TICKS(50));
 
-    // Update local CTS characteristic value and notify connected clock via NimBLE
+    // Update local CTS characteristic value for pull read by clock
     if (pCtsCharacteristic != nullptr) {
         uint8_t currentTime[10];
         if (!createCtsTimeData(currentTime)) {
@@ -208,14 +220,7 @@ void notifyCTSTime() {
 
         logMessage("CTS setValue()");
         pCtsCharacteristic->setValue(currentTime, 10);
-        logMessage("setValue done");
-
-        logMessage("CTS notify() executing...");
-        bool notified = pCtsCharacteristic->notify();
-        logMessage(String("CTS notify result=") + (notified ? "true" : "false"));
-        logMessage("notify done");
-
-        logMessage(" -> Display turned on & NTP time sync sent.", " -> Display On & Time Synced");
+        logMessage("setValue done. Ready for clock CTS read request.");
     } else {
         logMessage(" -> Failed: pCtsCharacteristic is nullptr.");
     }

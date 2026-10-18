@@ -17,10 +17,13 @@ class CTSCallbacks : public NimBLECharacteristicCallbacks {
         }
         
         pCharacteristic->setValue(currentTime, 10);
+        logMessage(" -> Returned CTS time data to clock (Read).");
     }
 
     void onSubscribe(NimBLECharacteristic* pCharacteristic, NimBLEConnInfo& connInfo, uint16_t subValue) override {
-
+        char subLog[64];
+        snprintf(subLog, sizeof(subLog), "CTS SUBSCRIBED: subValue=0x%04X", subValue);
+        logMessage(String(subLog));
     }
 };
 
@@ -130,6 +133,7 @@ class MyClientCallbacks : public NimBLEClientCallbacks {
         bleState.needCtsSync = false;
         bleState.hasReceivedNotification = false;
         bleState.isFirstPairing = !bonded;
+        bleState.doScan = false;
         xSemaphoreGive(systemMutex);
         
         logMessage("Connected to Glance Clock.", "Connected");
@@ -437,8 +441,14 @@ void loopBLE() {
         updateScreenStatus();
     }
 
+    // Re-verify scan and connection flags safely via mutex before starting periodic rescan
+    xSemaphoreTake(systemMutex, portMAX_DELAY);
+    bool stillScan = bleState.doScan;
+    bool stillConn = bleState.connected;
+    xSemaphoreGive(systemMutex);
+
     // Handle periodic rescanning after disconnect timeout delay
-    if (doScan && !connected && (millis() - discTime >= 5000)) {
+    if (stillScan && !stillConn && (millis() - discTime >= 5000)) {
         xSemaphoreTake(systemMutex, portMAX_DELAY);
         bleState.doScan = false;
         xSemaphoreGive(systemMutex);
